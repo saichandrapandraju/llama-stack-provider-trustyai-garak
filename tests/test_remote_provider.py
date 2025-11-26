@@ -141,7 +141,7 @@ class TestGarakRemoteEvalAdapter:
         )
         return GarakRemoteConfig(
             kubeflow_config=kubeflow_config,
-            base_url="http://test.api.com/v1"
+            llama_stack_url="http://test.api.com/v1"
         )
 
     @pytest.fixture
@@ -449,7 +449,9 @@ class TestGarakRemoteEvalAdapter:
         adapter.kfp_client = Mock()
         adapter.kfp_client.get_run.return_value = mock_run
         
-        # Mock S3 response
+        # Mock S3 configuration and response
+        adapter._s3_bucket = "test-bucket"
+        adapter._s3_prefix = "test-prefix"
         adapter.s3_client = Mock()
         adapter.s3_client.get_object.return_value = {
             'Body': Mock(read=lambda: json.dumps({

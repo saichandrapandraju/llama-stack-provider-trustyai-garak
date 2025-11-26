@@ -256,8 +256,7 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
             Generator options for OpenAI compatible model
         """
         import os
-        from llama_stack.apis.inference import SamplingParams, SamplingStrategy, TopPSamplingStrategy, TopKSamplingStrategy
-
+        
         if 'generator_options' in benchmark_metadata:
             return benchmark_metadata['generator_options']
         
@@ -275,40 +274,87 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
         }
         
         # Add extra params
-        sampling_params: SamplingParams = benchmark_config.eval_candidate.sampling_params
-        valid_params: dict = {}
-
-        strategy: SamplingStrategy = sampling_params.strategy
-        valid_params["strategy"] = strategy.type
-        if isinstance(strategy, TopPSamplingStrategy):
-            if strategy.top_p is not None:
-                valid_params['top_p'] = strategy.top_p
-            if strategy.temperature is not None:
-                valid_params['temperature'] = strategy.temperature
-        elif isinstance(strategy, TopKSamplingStrategy):
-            if strategy.top_k is not None:
-                valid_params['top_k'] = strategy.top_k
-
-        if sampling_params.max_tokens is not None:
-            valid_params['max_tokens'] = sampling_params.max_tokens
-        if sampling_params.repetition_penalty is not None:
-            valid_params['repetition_penalty'] = sampling_params.repetition_penalty
-        if sampling_params.stop is not None:
-            valid_params['stop'] = sampling_params.stop
+        valid_params: dict = self._get_sampling_params(benchmark_config)
         
         if valid_params:
             generator_options["openai"]["OpenAICompatible"].update(valid_params)
         return generator_options
+    
+    def _get_sampling_params(self, benchmark_config: "BenchmarkConfig") -> dict:
+        """Extract and validate sampling parameters from benchmark config.
+        
+        Args:
+            benchmark_config: Configuration containing sampling parameters
+            
+        Returns:
+            Dictionary of valid sampling parameters
+            
+        Raises:
+            GarakValidationError: If benchmark_config or sampling_params are invalid
+        """
+        from llama_stack.apis.inference import SamplingParams, SamplingStrategy, TopPSamplingStrategy, TopKSamplingStrategy
+
+        if not benchmark_config:
+            raise GarakValidationError("benchmark_config cannot be None")
+        if not hasattr(benchmark_config, 'eval_candidate'):
+            raise GarakValidationError("benchmark_config must have eval_candidate attribute")
+        if not hasattr(benchmark_config.eval_candidate, 'sampling_params'):
+            logger.warning("benchmark_config.eval_candidate has no sampling_params, using defaults")
+            return {}
+
+        sampling_params: SamplingParams = benchmark_config.eval_candidate.sampling_params
+        if not sampling_params:
+            logger.warning("sampling_params is None, using defaults")
+            return {}
+        
+        valid_params: dict = {}
+
+        if hasattr(sampling_params, 'strategy') and sampling_params.strategy:
+            strategy: SamplingStrategy = sampling_params.strategy
+            # valid_params["strategy"] = strategy.type
+            if isinstance(strategy, TopPSamplingStrategy):
+                if strategy.top_p is not None:
+                    valid_params['top_p'] = strategy.top_p
+                if strategy.temperature is not None:
+                    valid_params['temperature'] = strategy.temperature
+            elif isinstance(strategy, TopKSamplingStrategy):
+                if strategy.top_k is not None:
+                    valid_params['top_k'] = strategy.top_k
+
+        if sampling_params.max_tokens is not None:
+            valid_params['max_tokens'] = sampling_params.max_tokens
+        # if sampling_params.repetition_penalty is not None:
+        #     valid_params['repetition_penalty'] = sampling_params.repetition_penalty
+        if sampling_params.stop is not None:
+            valid_params['stop'] = sampling_params.stop
+        
+        return valid_params
     
     def _get_llama_stack_url(self) -> str:
         """Get the normalized Llama Stack URL with /v1 suffix.
         
         Returns:
             Llama Stack URL with /v1 suffix
+            
+        Raises:
+            GarakConfigError: If llama_stack_url is invalid
         """
         import re
 
-        llama_stack_url: str = self._config.llama_stack_url.rstrip("/")
+        if not hasattr(self._config, 'llama_stack_url') or not self._config.llama_stack_url:
+            raise GarakConfigError("llama_stack_url is not configured")
+        
+        llama_stack_url: str = self._config.llama_stack_url.strip()
+        
+        if not llama_stack_url:
+            raise GarakConfigError("llama_stack_url cannot be empty")
+        
+        if not llama_stack_url.startswith(("http://", "https://")):
+            raise GarakConfigError(
+                f"llama_stack_url must start with http:// or https://, got: {llama_stack_url}"
+            )
+        
+        llama_stack_url = llama_stack_url.rstrip("/")
         
         # check if URL ends with /v{number} and if not, add v1
         if not re.match(r"^.*\/v\d+$", llama_stack_url):
@@ -326,10 +372,27 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
             
         Returns:
             Generator options for function-based model with shield support
+            
+        Raises:
+            GarakValidationError: If benchmark_config is invalid
+            GarakConfigError: If llama_stack_url is not configured
         """
         from llama_stack_provider_trustyai_garak import shield_scan
         
-        llama_stack_url: str = self._get_llama_stack_url()
+        if not benchmark_config:
+            raise GarakValidationError("benchmark_config cannot be None")
+        if not hasattr(benchmark_config, 'eval_candidate') or not benchmark_config.eval_candidate:
+            raise GarakValidationError("benchmark_config must have eval_candidate")
+        if not hasattr(benchmark_config.eval_candidate, 'model') or not benchmark_config.eval_candidate.model:
+            raise GarakValidationError("benchmark_config.eval_candidate must have model")
+        
+        if not hasattr(self._config, 'llama_stack_url') or not self._config.llama_stack_url:
+            raise GarakConfigError("llama_stack_url is not configured")
+        
+        llama_stack_url: str = self._config.llama_stack_url.strip().rstrip("/")
+        
+        if not llama_stack_url:
+            raise GarakConfigError("llama_stack_url cannot be empty")
         
         # Map the shields to the input and output of LLM
         llm_io_shield_mapping: dict = {
@@ -346,6 +409,8 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
             if not shield_ids and not shield_config:
                 logger.warning("No shield_ids or shield_config found in the benchmark metadata")
             elif shield_ids:
+                if not isinstance(shield_ids, list):
+                    raise GarakValidationError("shield_ids must be a list")
                 if shield_config:
                     logger.warning(
                         "Both shield_ids and shield_config found in the benchmark metadata. "
@@ -353,6 +418,8 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
                     )
                 llm_io_shield_mapping["input"] = shield_ids
             elif shield_config:
+                if not isinstance(shield_config, dict):
+                    raise GarakValidationError("shield_config must be a dictionary")
                 if not shield_config.get("input") and not shield_config.get("output"):
                     logger.warning("No input or output found in the shield_config.")
                 llm_io_shield_mapping["input"] = shield_config.get("input", [])
@@ -368,11 +435,15 @@ class GarakEvalBase(Eval, BenchmarksProtocolPrivate):
                         "model": benchmark_config.eval_candidate.model,
                         "base_url": llama_stack_url,
                         "llm_io_shield_mapping": llm_io_shield_mapping,
-                        "max_workers": self._config.max_workers
+                        "max_workers": self._config.max_workers,
+                        # "skip_llm": benchmark_metadata.get("skip_llm", False)
                     }
                 }
             }
         }
+        valid_params: dict = self._get_sampling_params(benchmark_config)
+        if valid_params:
+            generator_options["function"]["Single"]["kwargs"]["sampling_params"] = valid_params
         return generator_options
     
     async def _check_shield_availability(self, llm_io_shield_mapping: dict) -> None:

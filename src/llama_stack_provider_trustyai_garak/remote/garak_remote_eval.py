@@ -10,7 +10,7 @@ import asyncio
 from ..config import GarakRemoteConfig
 from ..base_eval import GarakEvalBase
 from llama_stack_provider_trustyai_garak import shield_scan
-from ..errors import GarakError, GarakConfigError
+from ..errors import GarakError, GarakConfigError, GarakValidationError
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -182,9 +182,19 @@ class GarakRemoteEvalAdapter(GarakEvalBase):
         Args:
             benchmark_id: The benchmark id
             benchmark_config: Configuration for the evaluation task
+            
+        Raises:
+            GarakValidationError: If benchmark_id or benchmark_config are invalid
+            GarakConfigError: If configuration is invalid
+            GarakError: If KFP pipeline creation fails
         """
         if not self._initialized:
             await self.initialize()
+        
+        if not benchmark_id or not isinstance(benchmark_id, str):
+            raise GarakValidationError("benchmark_id must be a non-empty string")
+        if not benchmark_config:
+            raise GarakValidationError("benchmark_config cannot be None")
         
         _, benchmark_metadata = await self._validate_run_eval_request(benchmark_id, benchmark_config)
         
@@ -210,14 +220,26 @@ class GarakRemoteEvalAdapter(GarakEvalBase):
             
             self._ensure_kfp_client()
             
+            # Validate config before creating pipeline
+            if not self._config.kubeflow_config.namespace:
+                raise GarakConfigError("kubeflow_config.namespace is not configured")
+            if not self._config.kubeflow_config.s3_credentials_secret_name:
+                raise GarakConfigError("kubeflow_config.s3_credentials_secret_name is not configured")
+            if not self._config.llama_stack_url:
+                raise GarakConfigError("llama_stack_url is not configured")
+            
             experiment_name = f"trustyai-garak-{self._config.kubeflow_config.namespace}"
             os.environ['KUBEFLOW_S3_CREDENTIALS_SECRET_NAME'] = self._config.kubeflow_config.s3_credentials_secret_name
+            
+            llama_stack_url = self._config.llama_stack_url.strip().rstrip("/")
+            if not llama_stack_url:
+                raise GarakConfigError("llama_stack_url cannot be empty after normalization")
             
             run = self.kfp_client.create_run_from_pipeline_func(
                 garak_scan_pipeline,
                 arguments={
                     "command": cmd,
-                    "llama_stack_url": self._config.llama_stack_url,
+                    "llama_stack_url": llama_stack_url,
                     "job_id": job_id,
                     "eval_threshold": float(benchmark_metadata.get("eval_threshold", self.scan_config.VULNERABLE_SCORE)),
                     "timeout_seconds": int(scan_profile_config.get("timeout", self._config.timeout)),
@@ -239,10 +261,11 @@ class GarakRemoteEvalAdapter(GarakEvalBase):
                 
             return {"job_id": job_id, "status": job.status, "metadata": self._job_metadata.get(job_id, {})}
         except Exception as e:
-            logger.error(f"Error running eval: {e}")
+            logger.error(f"Error running eval for {benchmark_id}: {e}")
             async with self._jobs_lock:
                 job.status = JobStatus.failed
                 self._job_metadata[job.job_id]["error"] = str(e)
+            raise e
 
     def _map_kfp_run_state_to_job_status(self, run_state) -> JobStatus:
         """Map the KFP run state to the job status."""
@@ -298,27 +321,53 @@ class GarakRemoteEvalAdapter(GarakEvalBase):
                     if job.status == JobStatus.completed:
                         # Read from S3
                         try:
-                            self._ensure_s3_client()
+                            # Skip S3 reading if bucket not configured
+                            if not self._s3_bucket:
+                                logger.warning(f"S3 bucket not configured for job {job_id}, skipping file metadata retrieval")
+                            else:
+                                self._ensure_s3_client()
 
-                            s3_key = f'{self._s3_prefix}/{job_id}.json' if self._s3_prefix else f'{job_id}.json'
-                            response = self.s3_client.get_object(
-                                Bucket=self._s3_bucket,
-                                Key=s3_key
-                            )
-                            file_id_mapping: dict = json.loads(response['Body'].read())
-                            
-                            # Store the file IDs in job metadata
-                            # logger.info(f"====== File mapping: {file_id_mapping} ======")
-                            for key, value in file_id_mapping.items():
-                                self._job_metadata[job_id][key] = value
-                            
-                            # # Clean up - delete the file from S3
-                            # self.s3_client.delete_object(
-                            #     Bucket=self._s3_bucket,
-                            #     Key=f'{job_id}.json'
-                            # )
+                                s3_key = f'{self._s3_prefix}/{job_id}.json' if self._s3_prefix else f'{job_id}.json'
+                                
+                                # Validate S3 object exists before reading
+                                try:
+                                    response = self.s3_client.get_object(
+                                        Bucket=self._s3_bucket,
+                                        Key=s3_key
+                                    )
+                                except Exception as s3_err:
+                                    logger.warning(f"S3 object not found or inaccessible: {s3_key} in bucket {self._s3_bucket}: {s3_err}")
+                                    raise
+                                
+                                # Read and parse response
+                                body_content = response['Body'].read()
+                                if not body_content:
+                                    logger.warning(f"Empty S3 object for job {job_id}: {s3_key}")
+                                    raise ValueError(f"Empty S3 object: {s3_key}")
+                                
+                                try:
+                                    file_id_mapping: dict = json.loads(body_content)
+                                except json.JSONDecodeError as e:
+                                    logger.error(f"Failed to parse JSON from S3 object {s3_key}: {e}")
+                                    logger.debug(f"S3 content (first 500 chars): {body_content[:500]}")
+                                    raise
+                                
+                                if not isinstance(file_id_mapping, dict):
+                                    logger.error(f"S3 object {s3_key} did not contain a dictionary: {type(file_id_mapping)}")
+                                    raise ValueError(f"Invalid file mapping format in S3 object: {s3_key}")
+                                
+                                # Store the file IDs in job metadata
+                                # logger.info(f"====== File mapping: {file_id_mapping} ======")
+                                for key, value in file_id_mapping.items():
+                                    self._job_metadata[job_id][key] = value
+                                
+                                # # Clean up - delete the file from S3
+                                # self.s3_client.delete_object(
+                                #     Bucket=self._s3_bucket,
+                                #     Key=f'{job_id}.json'
+                                # )
                         except json.JSONDecodeError as e:
-                            logger.error(f"Failed to parse JSON from S3 object {job_id}.json: {e}")
+                            logger.error(f"Failed to parse JSON from S3 object {s3_key if 's3_key' in locals() else 'unknown'}: {e}")
                         except Exception as e:
                             logger.warning(f"Could not retrieve outputs from S3 for job {job_id}: {e}")
                 
