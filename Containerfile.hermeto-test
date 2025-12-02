@@ -1,0 +1,64 @@
+# Hermetic application build - uses pre-built base image with build tools
+# This build should work with --network none (fully hermetic)
+ARG TARGETARCH
+ARG BASE_IMAGE=localhost/llama-stack-garak-base-${TARGETARCH}:latest
+FROM ${BASE_IMAGE}
+
+# Re-declare ARG after FROM (ARGs don't persist across FROM statements)
+ARG TARGETARCH
+
+USER root
+WORKDIR /opt/app-root
+
+# Copy application source
+COPY . .
+
+# Set environment variables for hermetic builds
+# Cargo offline mode - prevents network access for Rust dependency builds
+# ENV CARGO_NET_OFFLINE=true
+# ENV CARGO_HOME=/tmp/hermeto-output/.cargo
+# Limit parallel compilation to reduce memory usage (for building from source)
+# ENV MAKEFLAGS="-j1"
+# ENV MAX_JOBS=1
+# ENV CMAKE_BUILD_PARALLEL_LEVEL=1
+# ENV PROPCACHE_NO_EXTENSIONS=1
+
+# Install dependencies from hermeto pre-fetched cache
+# Source hermeto.env for CARGO_HOME (needed for Rust packages)
+# Use explicit --find-links and --no-index flags for uv
+RUN if [ "$TARGETARCH" = "amd64" ] || [ "$TARGETARCH" = "x86_64" ]; then \
+        echo "Installing x86_64 dependencies with uv (hermetic) ..."; \
+        source /tmp/hermeto.env && \
+        # UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1 uv pip install --python python3.12 --system --no-cache \
+        uv pip install --no-cache \
+          --find-links /tmp/hermeto-output/deps/pip \
+          --no-index \
+        #   tiktoken==0.12.0; \
+        # tokenizers==0.22.1; \
+          -r requirements-x86_64.txt; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        echo "Installing ARM64 dependencies with uv (hermetic) ..."; \
+        source /tmp/hermeto.env && \
+        # UV_CONCURRENT_BUILDS=1 UV_CONCURRENT_INSTALLS=1 uv pip install --python python3.12 --system --no-cache \
+        uv pip install --python python3.12 --system --no-cache \
+          --find-links /tmp/hermeto-output/deps/pip \
+          --no-index \
+        #   tiktoken==0.12.0; \
+        #   tokenizers==0.22.1; \
+          -r requirements-aarch64.txt; \
+    else \
+        echo "ERROR: Unsupported architecture: $TARGETARCH"; \
+        exit 1; \
+    fi
+
+# Install the package itself (--no-deps since dependencies already installed)
+RUN uv pip install --find-links /tmp/hermeto-output/deps/pip --no-index --no-cache -e ".[remote]"
+
+# Set XDG environment variables to use /tmp (always writable) for garak to write to
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV XDG_DATA_HOME=/tmp/.local/share
+ENV XDG_CONFIG_HOME=/tmp/.config
+
+# Test command to validate installation
+CMD ["python3", "-c", "import garak; import torch; print(f'✅ SUCCESS! Garak: {garak.__version__}, PyTorch: {torch.__version__}, CUDA: {torch.cuda.is_available()}')"]
+

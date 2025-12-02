@@ -1,0 +1,42 @@
+# Exclude hermeto outputs from being copied into the container
+# These are mounted as volumes instead
+hermeto-output/
+hermeto-output-*/
+hermeto*.env
+Containerfile.test
+
+# Python cache and build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE and local files
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Testing and CI
+.github/
+tests/
+
+# Temporary files
+_scan_files/
+_providers.d/
+
+# Documentation (not needed in runtime)
+demos/
+*.md
+LICENSE
+COMPATIBILITY.md
+

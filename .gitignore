@@ -10,3 +10,9 @@ __pycache__/
 dist/
 .env
 _providers.d/
+hermeto-main/
+
+# Hermeto outputs (generated during testing)
+hermeto-output*/
+hermeto*.env
+Containerfile.test

@@ -1,0 +1,42 @@
+# Hermetic application build - uses pre-built base image with build tools
+# This build should work with --network none (fully hermetic)
+ARG TARGETARCH
+ARG BASE_IMAGE=localhost/llama-stack-garak-base-${TARGETARCH}:latest
+FROM ${BASE_IMAGE}
+
+ARG TARGETARCH
+
+USER root
+WORKDIR /opt/app-root
+
+# Copy application source
+COPY . .
+
+# Install dependencies from hermeto pre-fetched cache
+# Use explicit --find-links and --no-index flags for uv
+RUN if [ "$TARGETARCH" = "amd64" ] || [ "$TARGETARCH" = "x86_64" ]; then \
+        echo "Installing x86_64 dependencies with uv (hermetic) ..."; \
+        source /tmp/hermeto.env && \
+        uv pip install --no-cache \
+          --find-links /tmp/hermeto-output/deps/pip \
+          --no-index \
+          -r requirements-x86_64.txt; \
+    elif [ "$TARGETARCH" = "arm64" ] || [ "$TARGETARCH" = "aarch64" ]; then \
+        echo "Installing ARM64 dependencies with uv (hermetic) ..."; \
+        source /tmp/hermeto.env && \
+        uv pip install --no-cache \
+          --find-links /tmp/hermeto-output/deps/pip \
+          --no-index \
+          -r requirements-aarch64.txt; \
+    else \
+        echo "ERROR: Unsupported architecture: $TARGETARCH"; \
+        exit 1; \
+    fi
+
+# Install the package itself (--no-deps since dependencies already installed)
+RUN uv pip install --find-links /tmp/hermeto-output/deps/pip --no-index --no-cache --no-deps -e ".[remote]"
+
+# Set XDG environment variables to use /tmp (always writable) for garak to write to
+ENV XDG_CACHE_HOME=/tmp/.cache
+ENV XDG_DATA_HOME=/tmp/.local/share
+ENV XDG_CONFIG_HOME=/tmp/.config

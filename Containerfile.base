@@ -1,0 +1,18 @@
+# Base image with all system build tools installed
+# This build requires network access for dnf to download RPMs
+FROM registry.access.redhat.com/ubi9/python-312:latest
+
+USER root
+
+# Install Rust toolchain for Rust-based Python packages
+# Note: gcc, gcc-c++, and python3.12-devel are already included in ubi9/python-312 base image
+RUN dnf install -y --setopt install_weak_deps=0 --nodocs \
+    cargo \
+    rust \
+    && dnf clean all
+
+# Install uv for faster dependency installation
+RUN pip install --no-cache-dir uv
+
+# Set working directory for app builds
+WORKDIR /opt/app-root
