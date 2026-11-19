@@ -659,7 +659,7 @@ def setup_and_run_garak(
         error_msg = (
             f"Garak scan failed (rc={result.returncode}, "
             f"timed_out={result.timed_out}): "
-            f"{result.stderr[:500] if result.stderr else 'no stderr'}"
+            f"{result.incomplete_reason or (result.stderr[:500] if result.stderr else 'no stderr')}"
         )
         if result.log_errors:
             error_msg += "\nscan.log errors:\n" + "\n".join(result.log_errors)
