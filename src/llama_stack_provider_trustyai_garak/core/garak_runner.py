@@ -3,6 +3,7 @@
 - KFP components
 """
 
+import json
 import logging
 import os
 import signal
@@ -33,11 +34,13 @@ class GarakScanResult:
     report_prefix: Path
     timed_out: bool = False
     log_errors: list[str] = field(default_factory=list)
+    # Set when garak exited 0 but did not finish the scan (see _incomplete_scan_reason).
+    incomplete_reason: str | None = None
 
     @property
     def success(self) -> bool:
         """Check if the scan completed successfully."""
-        return self.returncode == 0 and not self.timed_out
+        return self.returncode == 0 and not self.timed_out and self.incomplete_reason is None
 
     @property
     def report_jsonl(self) -> Path:
@@ -68,6 +71,49 @@ class GarakScanResult:
             self.report_html,
         ]
         return [f for f in candidates if f.exists()]
+
+
+# Report entries garak writes only when a run finishes: "completion" when the run ends
+# and "digest" when the report is closed. An aborted run has neither.
+_COMPLETION_ENTRY_TYPES = frozenset({"completion", "digest"})
+
+
+def _incomplete_scan_reason(report_jsonl: Path) -> str | None:
+    """Return why a scan that exited 0 is not a complete scan, or None if it is.
+
+    garak exits 0 even when it aborts: an unreachable target, rejected credentials
+    and a probe whose generator fails to load all end with exit code 0 and a missing
+    or partial report. Scoring such a report yields attack_success_rate=0, i.e. a
+    passing result for a scan that never ran. Require the report to show that the
+    run reached its end and that at least one attempt was made.
+
+    Per-prompt errors that garak recovers from (e.g. a content filter rejecting one
+    prompt) do not affect these markers, so they do not fail the scan.
+    """
+    if not report_jsonl.exists():
+        return f"garak wrote no report ({report_jsonl.name}); the scan did not start"
+    attempts = 0
+    finished = False
+    try:
+        with open(report_jsonl, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    entry_type = json.loads(line).get("entry_type")
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if entry_type == "attempt":
+                    attempts += 1
+                elif entry_type in _COMPLETION_ENTRY_TYPES:
+                    finished = True
+    except OSError as exc:
+        return f"could not read garak report {report_jsonl.name}: {exc}"
+    if not finished:
+        return f"garak's report has no completion record; the scan was aborted after {attempts} attempt(s)"
+    if attempts == 0:
+        return "garak's report contains no attempts; no probe ran against the target"
+    return None
 
 
 def _extract_scan_log_issues(log_file: Path) -> list[str]:
@@ -257,6 +303,12 @@ def run_garak_scan(
     if log_file:
         log_errors = _extract_scan_log_issues(log_file)
 
+    incomplete_reason = None
+    if returncode == 0 and not timed_out:
+        incomplete_reason = _incomplete_scan_reason(report_prefix.with_suffix(".report.jsonl"))
+        if incomplete_reason:
+            logger.error("Garak exited 0 but the scan is incomplete: %s", incomplete_reason)
+
     return GarakScanResult(
         returncode=returncode,
         stdout=stdout,
@@ -264,6 +316,7 @@ def run_garak_scan(
         report_prefix=report_prefix,
         timed_out=timed_out,
         log_errors=log_errors,
+        incomplete_reason=incomplete_reason,
     )
 
 
