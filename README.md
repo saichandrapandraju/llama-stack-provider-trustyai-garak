@@ -84,6 +84,11 @@ The adapter reads a `JobSpec` from a mounted ConfigMap:
 
 ## Parameters
 
+The SDK's top-level `JobSpec.num_examples` is also honored as a soft per-probe
+prompt cap. It takes precedence over the legacy `parameters.num_examples` alias.
+Explicit `soft_probe_prompt_cap` settings, either flat or under `garak_config.run`,
+retain their precedence over the sample-limit alias.
+
 Key `parameters` in the job spec:
 
 | Parameter | Description | Default |
