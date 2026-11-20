@@ -5,6 +5,11 @@ on:
     branches: [main]
   push:
     branches: [main]
+  schedule:
+    # Garak drift is about new fork tags, not PR content, so it runs on a schedule
+    # instead of failing every open PR the moment a tag is pushed.
+    - cron: "0 5 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -77,6 +82,10 @@ jobs:
 
   check-garak-drift:
     name: Check garak midstream version drift
+    # The schedule only runs upstream; midstream/downstream get this file by sync.
+    if: >-
+      (github.event_name == 'schedule' && github.repository_owner == 'trustyai-explainability') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
 
     steps:
@@ -109,6 +118,7 @@ jobs:
 
   container-build:
     name: Container Build + Import Validation
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
 
     steps:
@@ -128,14 +138,14 @@ jobs:
             python -c \"import sdg_hub; print('sdg-hub OK')\" && \
             python -c \"import llama_stack_provider_trustyai_garak; print('provider OK')\""
 
-      - name: Verify garak version matches pyproject.toml
+      - name: Verify garak version matches requirements.txt
         run: |
-          EXPECTED=$(grep -oP 'garak==\K[^\s"]+' pyproject.toml)
+          EXPECTED=$(grep -oP '^garak==\K\S+' requirements.txt)
           INSTALLED=$(docker run --rm provider-smoke-test:ci python -c "from importlib.metadata import version; print(version('garak'))")
           echo "Expected: $EXPECTED"
           echo "Installed: $INSTALLED"
           if [ "$EXPECTED" != "$INSTALLED" ]; then
-            echo "::error::Garak version mismatch! Containerfile installs $INSTALLED but pyproject.toml expects $EXPECTED"
+            echo "::error::Garak version mismatch! Containerfile installs $INSTALLED but requirements.txt locks $EXPECTED"
             exit 1
           fi
-          echo "Garak version in container matches pyproject.toml."
+          echo "Garak version in container matches requirements.txt."

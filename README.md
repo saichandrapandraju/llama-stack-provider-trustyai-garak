@@ -165,7 +165,8 @@ Overall metrics include TBSA (Tier-Based Security Aggregate) when available.
 ## Development
 
 ```bash
-make test        # Run all tests
+make test        # Unit tests
+make e2e         # EvalHub contract tests: real eval-hub server + garak (tests/e2e/README.md)
 make coverage    # With coverage report
 make lint        # ruff check
 make format      # ruff format

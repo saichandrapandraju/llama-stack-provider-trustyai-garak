@@ -1,0 +1,26 @@
+# Test image for the e2e contract tests: the provider image built from this commit
+# plus the "test" extra (pytest, eval-hub-server), constrained by requirements.txt so
+# no locked package changes. The tests then run inside the image, as its runtime user,
+# against the adapter, garak and dependencies exactly as the image ships them.
+#
+#   docker build -f Containerfile -t garak-provider:ci .
+#   docker build -f tests/e2e/Containerfile --build-arg BASE_IMAGE=garak-provider:ci -t garak-provider-e2e:ci .
+#   docker run --rm -v "$PWD/tests:/e2e/tests:ro" -v "$PWD/pyproject.toml:/e2e/pyproject.toml:ro" \
+#     -w /e2e garak-provider-e2e:ci python -m pytest tests/e2e -o pythonpath= -m "e2e and not e2e_sweep"
+#
+# Only tests/ and pyproject.toml are mounted (no src/), so the adapter under test is
+# the one installed in the image.
+#
+# BASE_IMAGE can be any build of the provider (upstream Containerfile, the ODH image, the
+# downstream Konflux image). RUNTIME_USER must be the user that image runs as, so the tests
+# run under the same identity as the product (1001 upstream; the downstream image runs as root).
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG RUNTIME_USER=1001
+
+USER root
+COPY requirements.txt pyproject.toml scripts/install-locked-deps.sh /tmp/e2e-setup/
+RUN PIP_EXTRA_ARGS=--no-cache-dir /tmp/e2e-setup/install-locked-deps.sh --extras-only --extras test \
+        /tmp/e2e-setup/requirements.txt && \
+    rm -rf /tmp/e2e-setup
+USER ${RUNTIME_USER}

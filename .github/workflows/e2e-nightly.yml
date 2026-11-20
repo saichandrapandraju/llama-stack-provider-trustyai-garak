@@ -1,0 +1,233 @@
+name: Tier 2 - EvalHub E2E (nightly)
+
+# Runs the real eval-hub server (local mode) with the real garak adapter and real
+# garak against a deterministic mock model - no cluster. See tests/e2e/README.md.
+#
+# Versions: runtime packages come from requirements.txt and test tools (pytest, eval-hub-server)
+# from the "test" extra in pyproject.toml, both installed from public indexes by
+# scripts/install-locked-deps.sh - never from the production index. The garak catalog the tests
+# load is fetched from the eval-hub tag matching the installed eval-hub-server.
+#
+#   canary (evalhub-main) : locked set, but eval-hub-sdk main + server built from eval-hub main
+#   canary (garak-head)   : locked set, but the garak fork's automated-red-teaming branch head
+#   sweep                 : every taxonomy benchmark, full profile as shipped, inside the image
+#   report-nightly        : on a scheduled failure, opens (or comments on) an "e2e-nightly" issue
+#
+# The schedule only runs in the upstream repo (midstream and downstream get this file by sync).
+# Label a PR "run-nightly-e2e" to run these jobs against it (when the label is added and on every
+# later push while it stays), e.g. for garak bumps or dependency changes. workflow_dispatch only
+# works once this file is on the default branch.
+
+on:
+  schedule:
+    - cron: "0 5 * * *"
+  workflow_dispatch:
+    inputs:
+      evalhub_ref:
+        description: eval-hub git ref for the canary job
+        default: main
+      evalhub_sdk_ref:
+        description: eval-hub-sdk git ref for the canary job
+        default: main
+      image:
+        description: Provider image for the sweep (empty builds Containerfile from the branch)
+        default: ""
+      runtime_user:
+        description: User that image runs as (1001 upstream/ODH, 0 for the downstream image)
+        default: "1001"
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-nightly-${{ github.event.pull_request.number || github.ref }}
+  # Only a new push supersedes a running nightly; other label events must not cancel it.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' && github.event.action == 'synchronize' }}
+
+env:
+  E2E_REQUIRED: "1"
+  E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
+  PYTEST_E2E: python -m pytest tests/e2e -m "e2e and not e2e_sweep" -p no:cacheprovider -r fEsxX --durations=0 -o log_cli=true --log-cli-level=INFO
+  # Runs pytest inside the e2e image. Only tests/ and pyproject.toml are mounted (no src/), and
+  # pythonpath is cleared, so the adapter under test is the one installed in the image.
+  # The image keeps XDG caches under /tmp; the cached detector models and garak data are
+  # mounted there so benchmark runs don't download them every time.
+  RUN_IN_IMAGE: >-
+    docker run --rm
+    -v ${{ github.workspace }}/tests:/e2e/tests:ro
+    -v ${{ github.workspace }}/pyproject.toml:/e2e/pyproject.toml:ro
+    -v ${{ github.workspace }}/e2e-artifacts:/e2e-artifacts
+    -v ${{ github.workspace }}/.ci-cache/cache:/tmp/.cache
+    -v ${{ github.workspace }}/.ci-cache/data:/tmp/.local/share
+    -e E2E_REQUIRED=1 -e E2E_ARTIFACTS_DIR=/e2e-artifacts
+    -w /e2e
+
+jobs:
+  canary:
+    name: Nightly canary (${{ matrix.name }})
+    if: >-
+      (github.event_name == 'schedule' && github.repository_owner == 'trustyai-explainability') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-nightly-e2e') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-nightly-e2e'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: evalhub-main
+            evalhub_from_source: true
+            garak_ref: ""
+          - name: garak-head
+            evalhub_from_source: false
+            garak_ref: automated-red-teaming
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check out eval-hub
+        if: matrix.evalhub_from_source
+        uses: actions/checkout@v4
+        with:
+          repository: eval-hub/eval-hub
+          ref: ${{ inputs.evalhub_ref || 'main' }}
+          path: eval-hub
+          persist-credentials: false
+
+      - uses: actions/setup-go@v5
+        if: matrix.evalhub_from_source
+        with:
+          go-version-file: eval-hub/go.mod
+          cache-dependency-path: eval-hub/go.sum
+
+      - name: Build eval-hub server from source
+        if: matrix.evalhub_from_source
+        run: |
+          cd eval-hub
+          go build -o "$RUNNER_TEMP/eval-hub" ./cmd/eval_hub
+          echo "EVALHUB_SERVER_BIN=$RUNNER_TEMP/eval-hub" >> "$GITHUB_ENV"
+          echo "E2E_GARAK_PROVIDER_YAML=$PWD/config/providers/garak.yaml" >> "$GITHUB_ENV"
+          echo "eval-hub $(git rev-parse --short HEAD)"
+
+      - name: Install locked set, then swap in the component under test
+        env:
+          GARAK_REF: ${{ matrix.garak_ref }}
+          SDK_REF: ${{ inputs.evalhub_sdk_ref || 'main' }}
+          FROM_SOURCE: ${{ matrix.evalhub_from_source }}
+        run: |
+          python -m pip install --upgrade pip
+          scripts/install-locked-deps.sh --extras test
+          python -m pip install --no-deps -e .
+          # Overrides install with dependencies, so a new requirement of the component
+          # under test is pulled in rather than reported as a breakage.
+          if [ -n "$GARAK_REF" ]; then
+            python -m pip install "garak @ git+https://github.com/trustyai-explainability/garak.git@${GARAK_REF}"
+          fi
+          if [ "$FROM_SOURCE" = "true" ]; then
+            python -m pip install "eval-hub-sdk[adapter] @ git+https://github.com/eval-hub/eval-hub-sdk.git@${SDK_REF}"
+          fi
+          python -m pip list 2>/dev/null | grep -iE '^(garak|eval-hub|transformers|torch) '
+
+      - name: Run contract tests
+        run: ${{ env.PYTEST_E2E }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-canary-${{ matrix.name }}-logs
+          path: e2e-artifacts
+          if-no-files-found: ignore
+
+  sweep:
+    name: Nightly benchmark sweep, full profiles (inside the image)
+    if: >-
+      (github.event_name == 'schedule' && github.repository_owner == 'trustyai-explainability') ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' &&
+       contains(github.event.pull_request.labels.*.name, 'run-nightly-e2e') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'run-nightly-e2e'))
+    runs-on: ubuntu-latest
+    # GitHub-hosted runners' maximum: full profiles run with no garak timeout, and this only
+    # bounds a hung run (the tests also cancel a job that outlives E2E_SWEEP_TIMEOUT, 6 h).
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The nightly full sweep (a superset of the detector models) saves a fresh cache each
+      # night; this restores the newest one for the current lock, else any older one.
+      - name: Restore detector models and garak data
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-cache
+          key: garak-e2e-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            garak-e2e-${{ hashFiles('requirements.txt') }}-
+            garak-e2e-
+
+      - name: Prepare the e2e image (build from this checkout, or pull the given image)
+        uses: ./.github/actions/e2e-image
+        with:
+          image: ${{ inputs.image }}
+          runtime-user: ${{ inputs.runtime_user || '1001' }}
+
+      - name: Run every taxonomy benchmark, full profile, inside the image
+        run: >-
+          ${{ env.RUN_IN_IMAGE }} -e E2E_SWEEP=full garak-provider-e2e:ci
+          python -m pytest tests/e2e -o pythonpath= -m e2e_sweep -p no:cacheprovider -r fEsxX --durations=0 -o log_cli=true --log-cli-level=INFO
+
+      # Full profiles download every detector model, so this run refreshes the shared cache.
+      - name: Save detector models and garak data
+        if: ${{ !cancelled() }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-cache
+          key: garak-e2e-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-sweep-logs
+          path: e2e-artifacts
+          if-no-files-found: ignore
+
+  report-nightly:
+    name: Report nightly failure
+    needs: [canary, sweep]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the e2e-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create e2e-nightly --color B60205 --description "Nightly EvalHub e2e failure" 2>/dev/null || true
+          existing=$(gh issue list --label e2e-nightly --state open --json number --jq '.[0].number')
+          body="Nightly EvalHub e2e failed: ${RUN_URL}
+
+          Check which job failed: \`canary (evalhub-main)\` means an eval-hub server/SDK change on main
+          breaks the adapter; \`canary (garak-head)\` means the garak fork branch head does; \`sweep\` means a
+          benchmark no longer runs. Logs are attached to the run as artifacts."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --label e2e-nightly --title "Nightly EvalHub e2e failing" --body "$body"
+          fi

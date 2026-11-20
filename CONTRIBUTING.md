@@ -32,12 +32,14 @@ Dependencies are declared in `pyproject.toml` with optional extras:
 
 **Lockfile**: `requirements.txt` is a pinned lockfile generated from the
 [RH AI PyPI index](https://console.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9/simple/)
-via `uv pip compile`. It's used by downstream production builds for hermetic
-dependency pre-fetching. Regenerate with `make lock`.
+via `uv pip compile`. It is the single source of truth for package versions: downstream
+production builds prefetch it hermetically, and CI plus the dev `Containerfile` install
+exactly the same pins from public indexes with `scripts/install-locked-deps.sh` (the
+production index is reserved for product builds). Regenerate with `make lock`.
 
-**Container image**: The dev `Containerfile` installs from standard PyPI with
-garak from the midstream git branch. Production images use the AIPCC base image
-with the RH AI index. See `Containerfile` for the dev build and
+**Container image**: The dev `Containerfile` installs the locked set from public
+indexes (CPU torch, garak from the fork's tag for the locked version, the rest from PyPI).
+Production images use the AIPCC base image with the RH AI index. See `Containerfile` for the dev build and
 `Dockerfile.konflux` (downstream) for production.
 
 ## Development Workflow
@@ -45,12 +47,15 @@ with the RH AI index. See `Containerfile` for the dev build and
 ### Running Tests
 
 ```bash
-make test          # pytest with verbose output
+make test          # unit tests (pytest -m "not e2e")
 make coverage      # pytest with coverage report
+make e2e           # EvalHub contract tests
 ```
 
-All tests are unit tests — no cluster, GPU, or network access needed. Garak is
-mocked; it does not need to be installed.
+Unit tests need no cluster, GPU, or network access; garak is mocked and need not be
+installed. The EvalHub contract tests (`make e2e`) run the real eval-hub server, the
+adapter and garak against a mock model, without a cluster; see
+[`tests/e2e/README.md`](tests/e2e/README.md) for setup.
 
 ### Linting & Formatting
 

@@ -1,0 +1,55 @@
+name: Prepare the e2e image
+description: >-
+  Build the provider image from this checkout (default) or pull a ready-made one, then add the
+  test extra on top (tests/e2e/Containerfile). The result is tagged garak-provider-e2e:ci.
+inputs:
+  image:
+    description: Ready-made provider image to test. Empty builds Containerfile from the checkout.
+    default: ""
+  runtime-user:
+    description: User the provider image runs as (1001 for the upstream Containerfile).
+    default: "1001"
+  registry:
+    description: Registry to log in to before pulling `image` (e.g. quay.io). Empty skips login.
+    default: ""
+  registry-username:
+    description: Username for `registry`.
+    default: ""
+  registry-password:
+    description: Password or token for `registry`.
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Build or pull the provider image
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        REGISTRY: ${{ inputs.registry }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+      run: |
+        if [ -z "$IMAGE" ]; then
+          docker build -f Containerfile -t garak-provider:ci .
+          echo "E2E_BASE_IMAGE=garak-provider:ci" >> "$GITHUB_ENV"
+        else
+          if [ -n "$REGISTRY" ] && [ -n "$REGISTRY_USERNAME" ]; then
+            printf '%s' "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USERNAME" --password-stdin
+          fi
+          docker pull "$IMAGE"
+          echo "E2E_BASE_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+        fi
+
+    - name: Add the test extra on top
+      shell: bash
+      env:
+        RUNTIME_USER: ${{ inputs.runtime-user }}
+      run: |
+        docker build -f tests/e2e/Containerfile \
+          --build-arg BASE_IMAGE="$E2E_BASE_IMAGE" --build-arg RUNTIME_USER="$RUNTIME_USER" \
+          -t garak-provider-e2e:ci .
+        mkdir -p e2e-artifacts .ci-cache/cache .ci-cache/data
+        chmod 777 e2e-artifacts .ci-cache/cache .ci-cache/data
+        echo "Image under test: $E2E_BASE_IMAGE (user $RUNTIME_USER)"
+        labels="$(docker image inspect "$E2E_BASE_IMAGE" --format '{{json .Config.Labels}}')"
+        echo "Labels: ${labels:0:2000}"
