@@ -6,11 +6,13 @@ import importlib
 import json
 import sys
 import types
+from copy import deepcopy
 from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from evalhub.adapter.models.job import JobSpec as SDKJobSpec
 
 from llama_stack_provider_trustyai_garak.core.config_resolution import (
     build_effective_garak_config,
@@ -156,6 +158,38 @@ def test_broad_scan_prompt_cap_preserves_probe_selection(benchmark_id):
 )
 def test_prompt_cap_precedence(parameters, expected):
     assert build_effective_garak_config(parameters, resolve_scan_profile("avid")).run.soft_probe_prompt_cap == expected
+
+
+@pytest.mark.parametrize(
+    ("num_examples", "parameters", "expected_cap"),
+    [
+        (1, {}, 1),
+        (None, {}, 256),
+        (None, {"num_examples": 2}, 2),
+        (1, {"num_examples": 2}, 1),
+        (1, {"soft_probe_prompt_cap": 3}, 3),
+        (1, {"garak_config": {"run": {"soft_probe_prompt_cap": 4}}}, 4),
+        (1, {"soft_probe_prompt_cap": 3, "garak_config": {"run": {"soft_probe_prompt_cap": 4}}}, 3),
+    ],
+)
+def test_job_spec_prompt_cap(monkeypatch, tmp_path, num_examples, parameters, expected_cap):
+    job = SDKJobSpec(
+        id="prompt-cap-job",
+        provider_id="garak",
+        benchmark_id="owasp_llm_top10",
+        benchmark_index=0,
+        model={"url": "https://model.example/v1", "name": "test-model"},
+        parameters=deepcopy(parameters),
+        callback_url="https://evalhub.example",
+        num_examples=num_examples,
+    )
+    module = _load_evalhub_garak_adapter(monkeypatch)
+
+    config, profile, _ = module.GarakAdapter()._build_config_from_spec(job, tmp_path / "scan")
+
+    assert job.parameters == parameters
+    assert config["run"]["soft_probe_prompt_cap"] == expected_cap
+    assert config["run"]["spec"] == profile["garak_config"]["run"]["spec"]
 
 
 @pytest.mark.parametrize("run", [None, [], "legacy", 42, False])

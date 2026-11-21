@@ -1258,7 +1258,10 @@ class GarakAdapter(FrameworkAdapter):
             intents_params contains art_intents and related settings
             extracted from the profile and benchmark_config.
         """
-        benchmark_config = config.parameters or {}
+        benchmark_config = dict(config.parameters or {})
+        num_examples = getattr(config, "num_examples", None)
+        if num_examples is not None:
+            benchmark_config["num_examples"] = num_examples
         profile = self._resolve_profile(config.benchmark_id)
         garak_config: GarakCommandConfig = build_effective_garak_config(
             benchmark_config=benchmark_config,
