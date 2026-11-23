@@ -129,16 +129,6 @@ Scheduled runs (the nightly jobs and the garak drift check) run only in the
 upstream repo. Midstream and downstream get these files by sync, but don't run
 the schedule.
 
-## Known bugs pinned by these tests
-
-Both of these tests are marked `xfail(strict=True)`. When the bug is fixed the
-test passes unexpectedly, which fails the run, so remember to remove the marker
-when you fix one.
-
-- `test_unreachable_model_fails_the_job` and `test_rejected_credential_fails_the_job`:
-  failed scans are reported as `completed` with `pass: true`
-  ([#190](https://github.com/trustyai-explainability/llama-stack-provider-trustyai-garak/issues/190)).
-
 ## Not covered here
 
 KFP mode needs Data Science Pipelines. It's covered by the pipeline compile test

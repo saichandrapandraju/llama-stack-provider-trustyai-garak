@@ -304,13 +304,6 @@ def test_intents_full_profile(
 # --------------------------------------------------------------------------- failure paths
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug (#190): garak exits 0 when the target is unreachable and the adapter scores the missing "
-        "report as attack_success_rate=0, so the job reports completed/pass. Remove this marker when fixed."
-    ),
-)
 def test_unreachable_model_fails_the_job(evalhub: EvalHub, model_ref) -> None:
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
@@ -324,13 +317,6 @@ def test_unreachable_model_fails_the_job(evalhub: EvalHub, model_ref) -> None:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Known bug (#190): every model call is rejected (401) yet the job reports completed with "
-        "attack_success_rate=0 and pass=true. Remove this marker when fixed."
-    ),
-)
 def test_rejected_credential_fails_the_job(evalhub: EvalHub, model_ref, tmp_path: Path) -> None:
     bad_secret = tmp_path / "bad-secret"
     bad_secret.mkdir()
