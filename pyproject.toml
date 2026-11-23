@@ -45,7 +45,9 @@ inline = [
     "llama-stack-provider-trustyai-garak[sdg]",
     "garak==0.17.0+rhaiv.4",
 ]
-test = ["pytest", "pytest-cov", "pytest-asyncio"]
+# eval-hub-server: the server binary the e2e tests run (tests/e2e); its version selects
+# the eval-hub garak catalog the tests load. Install via scripts/install-locked-deps.sh --extras test.
+test = ["pytest", "pytest-cov", "pytest-asyncio", "eval-hub-server==1.0.3"]
 dev = ["llama-stack-provider-trustyai-garak[test]", "ruff", "pre-commit"]
 
 [tool.pytest.ini_options]
@@ -53,6 +55,10 @@ testpaths = ["tests"]
 python_files = "test_*.py"
 pythonpath = ["src"]
 addopts = "-v"
+markers = [
+    "e2e: real eval-hub server + garak adapter + garak against a mock model (see tests/e2e/conftest.py)",
+    "e2e_sweep: every taxonomy benchmark; needs E2E_SWEEP=capped (PRs) or E2E_SWEEP=full (nightly)",
+]
 
 [tool.coverage.run]
 source = ["llama_stack_provider_trustyai_garak"]

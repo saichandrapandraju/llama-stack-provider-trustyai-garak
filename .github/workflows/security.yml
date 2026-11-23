@@ -23,11 +23,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Install runtime deps
+      - name: Install runtime deps (requirements.txt, public indexes)
         run: |
           python -m pip install --upgrade pip
-          python -m pip install --no-cache-dir \
-            -r requirements.txt
+          PIP_EXTRA_ARGS=--no-cache-dir scripts/install-locked-deps.sh
           python -m pip install --no-cache-dir --no-deps .
 
       - name: Run Trivy filesystem scan

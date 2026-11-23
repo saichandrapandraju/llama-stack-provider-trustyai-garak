@@ -3,19 +3,14 @@ WORKDIR /opt/app-root
 
 USER root
 
-# Install dependencies
-COPY pyproject.toml .
-# Stub package so pip can resolve + cache all deps without the real source
-RUN mkdir -p src/llama_stack_provider_trustyai_garak && \
-    touch src/llama_stack_provider_trustyai_garak/__init__.py
-# Install cpu torch to reduce image size
-RUN pip install torch --index-url https://download.pytorch.org/whl/cpu
-# Install the package + sdg deps (everything except garak, which comes from git)
-RUN pip install --no-cache-dir ".[sdg]"
-# Install garak from midstream git (tag derived from pyproject.toml)
-RUN GARAK_VER=$(grep -oP 'garak==\K[^\s"]+' pyproject.toml) && \
-    pip install --no-cache-dir \
-    "garak @ git+https://github.com/trustyai-explainability/garak.git@v${GARAK_VER}"
+# Install the exact dependency set locked in requirements.txt (the single source of
+# truth for versions) from public indexes: CPU torch, garak from the fork's git tag,
+# everything else from PyPI. The production index in requirements.txt is reserved for
+# product builds. Deps are their own layer, so source changes don't reinstall them.
+# pyproject.toml comes along so the installer fails the build on a stale lock.
+COPY requirements.txt pyproject.toml scripts/install-locked-deps.sh ./
+RUN PIP_EXTRA_ARGS=--no-cache-dir ./install-locked-deps.sh requirements.txt && \
+    rm install-locked-deps.sh
 
 # Set XDG environment variables to use /tmp (always writable) for garak to write to
 ENV XDG_CACHE_HOME=/tmp/.cache
@@ -25,10 +20,9 @@ ENV XDG_CONFIG_HOME=/tmp/.config
 # Allow nltk to use proxies to download words corpora for translation
 ENV NLTK_ALLOW_PROXIED_URLOPEN=1
 
-# Copy real source and reinstall only our package (deps already cached above)
-# Must happen as root so we can remove the egg-info created by the stub install
+# Install our package on top of the locked deps
 COPY src src
-RUN rm -rf src/*.egg-info && pip install --no-cache-dir --no-deps ".[sdg]"
+RUN pip install --no-cache-dir --no-deps .
 
 # Drop to non-root for runtime (UBI9 uses 1001)
 USER 1001

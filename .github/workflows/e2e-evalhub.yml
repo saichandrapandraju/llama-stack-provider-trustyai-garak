@@ -1,0 +1,132 @@
+name: Tier 2 - EvalHub E2E
+
+# Runs the real eval-hub server (local mode) with the real garak adapter and real
+# garak against a deterministic mock model - no cluster. See tests/e2e/README.md.
+#
+# Versions: runtime packages come from requirements.txt and test tools (pytest, eval-hub-server)
+# from the "test" extra in pyproject.toml, both installed from public indexes by
+# scripts/install-locked-deps.sh - never from the production index. The garak catalog the tests
+# load is fetched from the eval-hub tag matching the installed eval-hub-server.
+#
+# The provider image is built from the commit and the tests run inside it: the contract suite,
+# the full intents profile, and every taxonomy benchmark capped (1 prompt/probe, 1 generation).
+# Nightly coverage lives in e2e-nightly.yml.
+#
+# Any other build of the provider can be tested the same way by passing `image` (run manually,
+# or call this workflow from another one), e.g. the ODH image or a downstream Konflux PR image.
+# A private image needs `registry` plus the registry_username/registry_password secrets.
+# `ref` checks out the tests from a given commit (default: the triggering commit).
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image:
+        description: Provider image to test (empty builds Containerfile from the branch)
+        default: ""
+      runtime_user:
+        description: User the image runs as (1001 upstream/ODH, 0 for the downstream image)
+        default: "1001"
+  workflow_call:
+    inputs:
+      image:
+        description: Provider image to test (empty builds Containerfile from the checkout)
+        type: string
+        default: ""
+      runtime_user:
+        description: User the image runs as
+        type: string
+        default: "1001"
+      registry:
+        description: Registry to log in to before pulling a private image (e.g. quay.io)
+        type: string
+        default: ""
+      ref:
+        description: Git ref to check out the tests from (default the triggering commit)
+        type: string
+        default: ""
+    secrets:
+      registry_username:
+        required: false
+      registry_password:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  # A literal prefix: under workflow_call, github.workflow is the caller's name and could collide.
+  group: e2e-evalhub-image-${{ github.event.pull_request.number || github.ref }}-${{ inputs.image || 'checkout' }}
+  cancel-in-progress: true
+
+env:
+  E2E_REQUIRED: "1"
+  E2E_ARTIFACTS_DIR: ${{ github.workspace }}/e2e-artifacts
+  # Runs pytest inside the e2e image. Only tests/ and pyproject.toml are mounted (no src/), and
+  # pythonpath is cleared, so the adapter under test is the one installed in the image.
+  # The image keeps XDG caches under /tmp; the cached detector models and garak data are
+  # mounted there so benchmark runs don't download them every time.
+  RUN_IN_IMAGE: >-
+    docker run --rm
+    -v ${{ github.workspace }}/tests:/e2e/tests:ro
+    -v ${{ github.workspace }}/pyproject.toml:/e2e/pyproject.toml:ro
+    -v ${{ github.workspace }}/e2e-artifacts:/e2e-artifacts
+    -v ${{ github.workspace }}/.ci-cache/cache:/tmp/.cache
+    -v ${{ github.workspace }}/.ci-cache/data:/tmp/.local/share
+    -e E2E_REQUIRED=1 -e E2E_ARTIFACTS_DIR=/e2e-artifacts
+    -w /e2e
+
+jobs:
+  image:
+    name: Contract + capped benchmarks (${{ inputs.image || 'image built from this commit' }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || '' }}
+          persist-credentials: false
+
+      # The nightly full sweep (a superset of the detector models) saves a fresh cache each
+      # night; this restores the newest one for the current lock, else any older one.
+      - name: Restore detector models and garak data
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .ci-cache
+          key: garak-e2e-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+          restore-keys: |
+            garak-e2e-${{ hashFiles('requirements.txt') }}-
+            garak-e2e-
+
+      - name: Prepare the e2e image (build from this checkout, or pull the given image)
+        uses: ./.github/actions/e2e-image
+        with:
+          image: ${{ inputs.image }}
+          runtime-user: ${{ inputs.runtime_user || '1001' }}
+          registry: ${{ inputs.registry }}
+          registry-username: ${{ secrets.registry_username }}
+          registry-password: ${{ secrets.registry_password }}
+
+      - name: Run contract tests and capped benchmarks inside the image
+        run: >-
+          ${{ env.RUN_IN_IMAGE }} -e E2E_SWEEP=capped garak-provider-e2e:ci
+          python -m pytest tests/e2e -o pythonpath= -m e2e -p no:cacheprovider -r fEsxX --durations=0 -o log_cli=true --log-cli-level=INFO
+
+      - name: Save detector models and garak data (only if nothing was restored)
+        if: ${{ !cancelled() && steps.cache.outputs.cache-matched-key == '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: .ci-cache
+          key: garak-e2e-${{ hashFiles('requirements.txt') }}-${{ github.run_id }}
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-image-logs
+          path: e2e-artifacts
+          if-no-files-found: ignore

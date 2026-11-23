@@ -82,12 +82,17 @@ pip install -e ".[dev]"   # Dev (tests + ruff + pre-commit)
 ## Running Tests
 
 ```bash
-make test      # All tests (no cluster/GPU/network needed)
+make test      # Unit tests (no cluster/GPU/network needed)
+make e2e       # EvalHub contract tests (see below)
 make coverage  # With coverage report
 make lint      # ruff check
 ```
 
-Tests are 100% unit tests. Garak is mocked — it does not need to be installed.
+Unit tests mock garak — it does not need to be installed.
+
+`make e2e` runs the EvalHub contract tests in `tests/e2e/`: the real eval-hub server
+(local mode), the real adapter and real garak against a mock model. They need garak and
+`eval-hub-server` installed and are skipped otherwise; see `tests/e2e/README.md`.
 
 ## Debugging
 
