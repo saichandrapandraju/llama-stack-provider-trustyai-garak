@@ -17,7 +17,9 @@ from llama_stack_provider_trustyai_garak.core.garak_runner import run_garak_scan
 
 SETUP = {"entry_type": "start_run setup"}
 INIT = {"entry_type": "init"}
-ATTEMPT = {"entry_type": "attempt", "status": 2}
+ATTEMPT = {"entry_type": "attempt", "status": 2, "outputs": [{"text": "I can't help with that.", "lang": "en"}]}
+# What garak 0.17 records when the target errors on a request (e.g. HTTP 500): no output.
+FAILED_ATTEMPT = {"entry_type": "attempt", "status": 2, "outputs": [None]}
 COMPLETION = {"entry_type": "completion"}
 DIGEST = {"entry_type": "digest"}
 
@@ -103,6 +105,35 @@ def test_finished_scan_without_attempts_fails(fake_garak):
     result = fake_garak([SETUP, COMPLETION, DIGEST])
     assert not result.success
     assert "no attempts" in result.incomplete_reason
+
+
+def test_target_failing_every_request_fails(fake_garak):
+    """HTTP 500 on every request: garak gives up per prompt but still finishes the run."""
+    result = fake_garak([SETUP, FAILED_ATTEMPT, FAILED_ATTEMPT, COMPLETION, DIGEST])
+    assert not result.success
+    assert "no output for any of the 2 attempt record(s)" in result.incomplete_reason
+
+
+@pytest.mark.parametrize(
+    "outputs",
+    [[None, {"text": "", "lang": "en"}], ["plain string output (older garak)"]],
+    ids=["one-of-several-generations", "string-output"],
+)
+def test_any_answered_attempt_counts(fake_garak, outputs):
+    attempt = {"entry_type": "attempt", "status": 2, "outputs": outputs}
+    assert fake_garak([SETUP, attempt, COMPLETION, DIGEST]).success
+
+
+def test_some_failed_requests_do_not_fail_the_scan(fake_garak):
+    """Errors on some prompts are recoverable; the answered ones are still scored."""
+    result = fake_garak([SETUP, FAILED_ATTEMPT, ATTEMPT, COMPLETION, DIGEST])
+    assert result.success
+
+
+@pytest.mark.parametrize("outputs", [[None], [{"text": None}], [], None], ids=["none", "null-text", "empty", "missing"])
+def test_attempts_without_output_do_not_count(fake_garak, outputs):
+    attempt = {"entry_type": "attempt", "status": 1, "outputs": outputs}
+    assert not fake_garak([SETUP, attempt, COMPLETION, DIGEST]).success
 
 
 def test_recoverable_errors_do_not_fail_a_finished_scan(fake_garak):

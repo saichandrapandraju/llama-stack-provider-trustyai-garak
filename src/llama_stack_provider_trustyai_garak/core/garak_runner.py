@@ -85,7 +85,12 @@ def _incomplete_scan_reason(report_jsonl: Path) -> str | None:
     and a probe whose generator fails to load all end with exit code 0 and a missing
     or partial report. Scoring such a report yields attack_success_rate=0, i.e. a
     passing result for a scan that never ran. Require the report to show that the
-    run reached its end and that at least one attempt was made.
+    run reached its end, that at least one attempt was made, and that the target
+    answered at least one of them.
+
+    The last check catches a target that errors on every request (e.g. HTTP 500):
+    garak gives up on each prompt, records the attempt with no output, and still
+    finishes the run, so the report looks complete but nothing was evaluated.
 
     Per-prompt errors that garak recovers from (e.g. a content filter rejecting one
     prompt) do not affect these markers, so they do not fail the scan.
@@ -93,6 +98,7 @@ def _incomplete_scan_reason(report_jsonl: Path) -> str | None:
     if not report_jsonl.exists():
         return f"garak wrote no report ({report_jsonl.name}); the scan did not start"
     attempts = 0
+    answered = 0
     finished = False
     try:
         with open(report_jsonl, encoding="utf-8", errors="replace") as f:
@@ -100,11 +106,14 @@ def _incomplete_scan_reason(report_jsonl: Path) -> str | None:
                 if not line.strip():
                     continue
                 try:
-                    entry_type = json.loads(line).get("entry_type")
+                    entry = json.loads(line)
+                    entry_type = entry.get("entry_type")
                 except (json.JSONDecodeError, AttributeError):
                     continue
                 if entry_type == "attempt":
                     attempts += 1
+                    if _has_output(entry):
+                        answered += 1
                 elif entry_type in _COMPLETION_ENTRY_TYPES:
                     finished = True
     except OSError as exc:
@@ -113,7 +122,27 @@ def _incomplete_scan_reason(report_jsonl: Path) -> str | None:
         return f"garak's report has no completion record; the scan was aborted after {attempts} attempt(s)"
     if attempts == 0:
         return "garak's report contains no attempts; no probe ran against the target"
+    if answered == 0:
+        return (
+            f"the target returned no output for any of the {attempts} attempt record(s); "
+            "every request to the model failed (see scan.log for the HTTP errors)"
+        )
     return None
+
+
+def _has_output(attempt: dict) -> bool:
+    """Whether a report attempt carries at least one response from the target.
+
+    garak records a failed generation as a ``None`` output (0.17 writes outputs as
+    message dicts, ``{"text": ...}``; older versions as plain strings).
+    """
+    for output in attempt.get("outputs") or []:
+        if isinstance(output, dict):
+            if output.get("text") is not None:
+                return True
+        elif output is not None:
+            return True
+    return False
 
 
 def _extract_scan_log_issues(log_file: Path) -> list[str]:

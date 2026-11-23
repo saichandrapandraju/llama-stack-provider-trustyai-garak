@@ -30,6 +30,7 @@ server with fixed answers. It picks its answer from the model name:
 
 - **Targets:** `mock-refuser` always refuses and `mock-complier` always plays along
   with jailbreaks, so a test can assert the attack success rate as well as completion.
+  `mock-erroring` answers every request with HTTP 500, for the failure-path tests.
 - **Intents helpers:** `mock-sdg`, `mock-attacker`, `mock-evaluator`, `mock-judge`
   and `mock-translator` answer in the formats sdg-hub, TAP, MulticlassJudge and
   garak's translator parse. That lets the **full intents profile** run end to end

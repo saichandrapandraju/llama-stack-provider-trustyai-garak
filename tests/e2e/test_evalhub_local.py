@@ -36,6 +36,7 @@ from .conftest import (
 from .mock_openai_server import (
     ATTACKER,
     COMPLIER,
+    ERRORING,
     EVALUATOR,
     JUDGE,
     REFUSER,
@@ -328,6 +329,18 @@ def test_rejected_credential_fails_the_job(evalhub: EvalHub, model_ref, tmp_path
 
     assert job["status"]["state"] == "failed", (
         f"rejected credential reported {job['status']} / {job.get('results')}\n"
+        f"{evalhub.adapter_log_tail(job['resource']['id'])}"
+    )
+
+
+def test_model_erroring_on_every_request_fails_the_job(evalhub: EvalHub, mock_model, model_ref) -> None:
+    """HTTP 500 on every request: garak gives up on each prompt, still finishes the run, and the
+    detectors evaluate nothing. Scoring that as attack_success_rate=0 would be a false pass."""
+    job = evalhub.wait(evalhub.submit(_quick_job("e2e-erroring", model_ref(ERRORING))), QUICK_TIMEOUT)
+
+    assert mock_model.state.snapshot()["requests_by_model"].get(ERRORING), "the erroring model was never called"
+    assert job["status"]["state"] == "failed", (
+        f"a model that errored on every request reported {job['status']} / {job.get('results')}\n"
         f"{evalhub.adapter_log_tail(job['resource']['id'])}"
     )
 
