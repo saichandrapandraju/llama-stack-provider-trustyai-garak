@@ -11,7 +11,8 @@ name: Tier 2 - EvalHub E2E (nightly)
 #   canary (evalhub-main) : locked set, but eval-hub-sdk main + server built from eval-hub main
 #   canary (garak-head)   : locked set, but the garak fork's automated-red-teaming branch head
 #   sweep                 : every taxonomy benchmark, full profile as shipped, inside the image
-#   report-nightly        : on a scheduled failure, opens (or comments on) an "e2e-nightly" issue
+#   report-nightly        : on a scheduled failure, opens (or comments on) an "e2e-nightly" issue;
+#                           closes it after a scheduled run where every job passes
 #
 # The schedule only runs in the upstream repo (midstream and downstream get this file by sync).
 # Label a PR "run-nightly-e2e" to run these jobs against it (when the label is added and on every
@@ -207,27 +208,31 @@ jobs:
 
   report-nightly:
     name: Report nightly failure
+    # Scheduled runs only: opens (or comments on) the "e2e-nightly" issue when a job fails and
+    # closes it after a night where every job passes.
     needs: [canary, sweep]
-    if: failure() && github.event_name == 'schedule'
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped')
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update the e2e-nightly issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh label create e2e-nightly --color B60205 --description "Nightly EvalHub e2e failure" 2>/dev/null || true
-          existing=$(gh issue list --label e2e-nightly --state open --json number --jq '.[0].number')
-          body="Nightly EvalHub e2e failed: ${RUN_URL}
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
 
-          Check which job failed: \`canary (evalhub-main)\` means an eval-hub server/SDK change on main
-          breaks the adapter; \`canary (garak-head)\` means the garak fork branch head does; \`sweep\` means a
-          benchmark no longer runs. Logs are attached to the run as artifacts."
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
-          else
-            gh issue create --label e2e-nightly --title "Nightly EvalHub e2e failing" --body "$body"
-          fi
+      - name: Open, update or close the e2e-nightly issue
+        uses: ./.github/actions/report-scheduled-run
+        with:
+          outcome: ${{ contains(needs.*.result, 'failure') && 'failure' || 'success' }}
+          label: e2e-nightly
+          label-description: Nightly EvalHub e2e failure
+          title: Nightly EvalHub e2e failing
+          body: |
+            Nightly EvalHub e2e failed.
+
+            Check which job failed: `canary (evalhub-main)` means an eval-hub server/SDK change on main
+            breaks the adapter; `canary (garak-head)` means the garak fork branch head does; `sweep` means a
+            benchmark no longer runs. Logs are attached to the run as artifacts.

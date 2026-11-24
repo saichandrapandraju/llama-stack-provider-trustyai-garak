@@ -87,16 +87,18 @@ jobs:
       (github.event_name == 'schedule' && github.repository_owner == 'trustyai-explainability') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    outputs:
+      pinned: ${{ steps.versions.outputs.pinned }}
+      latest: ${{ steps.versions.outputs.latest }}
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Compare pyproject.toml garak version with latest midstream tag
+      - name: Read the pinned garak version and the latest midstream tag
+        id: versions
         run: |
           PYPROJECT_VER=$(grep -oP 'garak==\K[^\s"]+' pyproject.toml)
-          echo "pyproject.toml garak version: $PYPROJECT_VER"
-
           LATEST_TAG=$(git ls-remote --tags \
             https://github.com/trustyai-explainability/garak.git \
             | grep 'refs/tags/v' \
@@ -104,8 +106,20 @@ jobs:
             | sed 's|.*refs/tags/v||' \
             | sort -V \
             | tail -1)
+          echo "pyproject.toml garak version: $PYPROJECT_VER"
           echo "Latest midstream tag: $LATEST_TAG"
+          echo "pinned=$PYPROJECT_VER" >> "$GITHUB_OUTPUT"
+          echo "latest=$LATEST_TAG" >> "$GITHUB_OUTPUT"
 
+      - name: Compare pyproject.toml garak version with latest midstream tag
+        env:
+          PYPROJECT_VER: ${{ steps.versions.outputs.pinned }}
+          LATEST_TAG: ${{ steps.versions.outputs.latest }}
+        run: |
+          if [ -z "$PYPROJECT_VER" ] || [ -z "$LATEST_TAG" ]; then
+            echo "::error::Could not read the pinned garak version or the latest midstream tag."
+            exit 1
+          fi
           if [ "$PYPROJECT_VER" != "$LATEST_TAG" ]; then
             echo "::error::Garak version drift detected!"
             echo "  pyproject.toml pins: $PYPROJECT_VER"
@@ -115,6 +129,47 @@ jobs:
           fi
 
           echo "Garak version is up-to-date with midstream."
+
+  report-drift:
+    name: Report garak drift
+    # Scheduled runs only: keeps one open "garak-drift" issue while the pin lags the latest fork
+    # tag (one comment per new tag, not one per night) and closes it once the pin catches up.
+    needs: check-garak-drift
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      contains(fromJSON('["success", "failure"]'), needs.check-garak-drift.result)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+
+      - name: Open, update or close the garak-drift issue
+        uses: ./.github/actions/report-scheduled-run
+        with:
+          outcome: ${{ needs.check-garak-drift.result }}
+          label: garak-drift
+          label-description: The garak pin lags the latest trustyai garak fork tag
+          title: >-
+            ${{ needs.check-garak-drift.outputs.latest &&
+            format('garak {0} is available (pinned: {1})', needs.check-garak-drift.outputs.latest, needs.check-garak-drift.outputs.pinned) ||
+            'Scheduled garak drift check failing' }}
+          key: ${{ needs.check-garak-drift.outputs.latest }}
+          body: |
+            The trustyai garak fork has a newer tag than the one this repo pins.
+
+            - Pinned (`pyproject.toml`, `inline` extra): `${{ needs.check-garak-drift.outputs.pinned }}`
+            - Latest fork tag: `${{ needs.check-garak-drift.outputs.latest }}`
+
+            To bump: update the `garak==` pin in `pyproject.toml`, run `make lock`, and open a PR.
+            Label the PR `run-nightly-e2e` so the full benchmark sweep runs against the new garak.
+            This issue closes itself after the next scheduled run that finds no drift.
+
+            If both versions above are empty, the check itself failed (e.g. the tag lookup); see the run.
 
   container-build:
     name: Container Build + Import Validation

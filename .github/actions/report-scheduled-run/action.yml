@@ -1,0 +1,80 @@
+name: Report a scheduled run
+description: >-
+  Keep one open issue per scheduled check. On failure, open it (or comment on it); on success,
+  close it. With `key`, a failure with the same key as the last report adds nothing, so a
+  condition that persists for days (e.g. version drift) is reported once, not every night.
+  The job using this needs `permissions: issues: write`.
+inputs:
+  outcome:
+    description: "`failure` opens or updates the issue, `success` closes it."
+    required: true
+  label:
+    description: Label that identifies this check's issue (created if missing).
+    required: true
+  label-description:
+    description: Description for the label when it is created.
+    default: ""
+  title:
+    description: Issue title. Updated on an open issue when it changes (e.g. a newer version).
+    default: ""
+  body:
+    description: Issue body or comment for a failure. The run URL is appended.
+    default: ""
+  key:
+    description: >-
+      What failed, e.g. the version that drifted. A failure whose key matches the last reported
+      one is not reported again. Empty reports every failure.
+    default: ""
+  token:
+    description: Token with issues write access.
+    default: ${{ github.token }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        GH_REPO: ${{ github.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        OUTCOME: ${{ inputs.outcome }}
+        LABEL: ${{ inputs.label }}
+        LABEL_DESCRIPTION: ${{ inputs.label-description }}
+        TITLE: ${{ inputs.title }}
+        BODY: ${{ inputs.body }}
+        KEY: ${{ inputs.key }}
+      run: |
+        set -euo pipefail
+        existing=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')
+
+        if [ "$OUTCOME" = "success" ]; then
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --comment "The scheduled run passed again: ${RUN_URL}"
+            echo "Closed #${existing}"
+          fi
+          exit 0
+        fi
+        [ "$OUTCOME" = "failure" ] || { echo "::error::outcome must be failure or success, got '$OUTCOME'"; exit 1; }
+
+        marker="<!-- scheduled-run-key: ${KEY} -->"
+        text="${BODY}
+
+        Run: ${RUN_URL}
+        ${marker}"
+
+        if [ -z "$existing" ]; then
+          gh label create "$LABEL" --color B60205 --description "$LABEL_DESCRIPTION" 2>/dev/null || true
+          gh issue create --label "$LABEL" --title "${TITLE:-Scheduled check failing: $LABEL}" --body "$text"
+          exit 0
+        fi
+
+        if [ -n "$KEY" ]; then
+          last=$(gh issue view "$existing" --json body,comments \
+            --jq '[.body, .comments[].body] | map(select(contains("scheduled-run-key"))) | last // ""' \
+            | sed -n 's/.*<!-- scheduled-run-key: \(.*\) -->.*/\1/p' | tail -n1)
+          if [ "$last" = "$KEY" ]; then
+            echo "#${existing} already reports '${KEY}'; nothing to add."
+            exit 0
+          fi
+        fi
+        [ -z "$TITLE" ] || gh issue edit "$existing" --title "$TITLE"
+        gh issue comment "$existing" --body "$text"
