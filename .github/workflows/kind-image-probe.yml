@@ -1,0 +1,151 @@
+name: kind image probe (throwaway)
+
+# Measures what a k8s-tests tier for garak would cost on a standard runner: bring up the
+# TrustyAI operators on kind with k8s-tests, build the provider image, load it into the
+# node, and start a pod from it. Not meant to merge; it lives on a fork branch only.
+on:
+  push:
+    branches: [ci/kind-image-probe]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  K8S_TESTS_REF: v0.1.0
+  OPERATOR_REF: main
+  PROVIDER_IMG: localhost/garak-provider:k8s-probe
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      OPERATOR_REPO: ${{ github.workspace }}/trustyai-service-operator
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: provider
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: trustyai-explainability/k8s-tests
+          ref: ${{ env.K8S_TESTS_REF }}
+          path: k8s-tests
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: trustyai-explainability/trustyai-service-operator
+          ref: ${{ env.OPERATOR_REF }}
+          path: trustyai-service-operator
+          persist-credentials: false
+
+      - name: Record a timing
+        run: |
+          cat > "$RUNNER_TEMP/mark.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # mark.sh LABEL: append "LABEL | seconds since the previous mark | disk free" to the table
+          now=$(date +%s)
+          prev=$(cat "$RUNNER_TEMP/last" 2>/dev/null || echo "$now")
+          echo "$now" > "$RUNNER_TEMP/last"
+          free=$(df -BG --output=avail / | tail -1 | tr -d ' ')
+          echo "| $1 | $((now - prev)) s | $free |" >> "$RUNNER_TEMP/timings.md"
+          echo "== $1: $((now - prev)) s, $free free"
+          EOF
+          chmod +x "$RUNNER_TEMP/mark.sh"
+          echo "MARK=$RUNNER_TEMP/mark.sh" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/mark.sh" start
+          nproc; free -g; df -h /
+
+      - name: Free the disk the build does not need
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          "$MARK" "free disk"
+
+      - name: Install kind and kubectl
+        env:
+          KIND_VERSION: v0.33.0
+          KUBECTL_VERSION: v1.37.2
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+        run: |
+          curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KIND_SHA256}  /tmp/kind" | sha256sum --check --strict -
+          echo "${KUBECTL_SHA256}  /tmp/kubectl" | sha256sum --check --strict -
+          sudo install -m 0755 /tmp/kind /tmp/kubectl /usr/local/bin/
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: k8s-tests/uv.lock
+
+      - name: Install k8s-tests
+        working-directory: k8s-tests
+        run: |
+          uv sync --frozen
+          "$MARK" "tools + k8s-tests env"
+
+      - name: k8s-tests up (cluster, operator images, load, deploy)
+        working-directory: k8s-tests
+        run: |
+          uv run k8s-tests up
+          "$MARK" "k8s-tests up"
+
+      - name: Build the provider image
+        working-directory: provider
+        run: |
+          docker build -f Containerfile -t "$PROVIDER_IMG" .
+          "$MARK" "docker build (cold)"
+          docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+
+      - name: Load the provider image into kind
+        run: |
+          docker save "$PROVIDER_IMG" -o "$RUNNER_TEMP/provider.tar"
+          echo "archive: $(du -h "$RUNNER_TEMP/provider.tar" | cut -f1)" | tee -a "$RUNNER_TEMP/notes.md"
+          "$MARK" "docker save"
+          kind load image-archive --name trustyai "$RUNNER_TEMP/provider.tar"
+          "$MARK" "kind load image-archive"
+          rm -f "$RUNNER_TEMP/provider.tar"
+          docker exec trustyai-control-plane crictl images | grep -E 'garak|IMAGE'
+          "$MARK" "after removing the archive"
+
+      - name: Start a pod from the loaded image
+        run: |
+          kubectl run garak-probe --image="$PROVIDER_IMG" --image-pull-policy=IfNotPresent --restart=Never \
+            --command -- python -c "import garak, llama_stack_provider_trustyai_garak; print('garak', garak.__version__)"
+          kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/garak-probe --timeout=300s
+          kubectl logs garak-probe | tee -a "$RUNNER_TEMP/notes.md"
+          "$MARK" "pod from loaded image"
+
+      - name: What the cluster pins for garak, and what it has left
+        if: always()
+        run: |
+          set +e
+          echo '### garak provider ConfigMaps' >> "$RUNNER_TEMP/notes.md"
+          kubectl get cm -A -o json | jq -r '.items[] | select(.metadata.name | test("garak")) |
+            "\(.metadata.namespace)/\(.metadata.name)"' | tee -a "$RUNNER_TEMP/notes.md"
+          kubectl get cm -A -o json | jq -r '.items[] | select(.metadata.name | test("provider-garak")) |
+            .data[]' | grep -nE 'image|pull' | tee -a "$RUNNER_TEMP/notes.md"
+          echo '### module operator RELATED_IMAGE env' >> "$RUNNER_TEMP/notes.md"
+          kubectl get deploy -A -o json | jq -r '.items[].spec.template.spec.containers[].env[]? |
+            select(.name | test("GARAK")) | "\(.name)=\(.value)"' | tee -a "$RUNNER_TEMP/notes.md"
+          echo '### node allocatable' >> "$RUNNER_TEMP/notes.md"
+          kubectl get node -o jsonpath='{.items[0].status.allocatable}' | tee -a "$RUNNER_TEMP/notes.md"
+          echo; kubectl get pods -A
+          docker system df
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### kind image probe (k8s-tests ${K8S_TESTS_REF}, operator ${OPERATOR_REF})"
+            echo
+            echo "| Step | Time | Disk free after |"
+            echo "|---|---|---|"
+            cat "$RUNNER_TEMP/timings.md"
+            echo
+            cat "$RUNNER_TEMP/notes.md" 2>/dev/null
+          } >> "$GITHUB_STEP_SUMMARY"
