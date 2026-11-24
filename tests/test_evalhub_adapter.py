@@ -1985,7 +1985,7 @@ class TestJobPhaseReporting:
                 stdout="",
                 stderr="",
                 report_prefix=report_prefix,
-                retry_budget_reason="the model kept failing for 10 min with no scan progress",
+                retry_budget_reason="model requests kept failing for 10 min with no scan progress",
             )
 
         monkeypatch.setattr(module, "run_garak_scan", _fake_run)
@@ -2004,7 +2004,7 @@ class TestJobPhaseReporting:
             exports=None,
         )
 
-        with pytest.raises(RuntimeError, match="Garak scan stopped: the model kept failing for 10 min"):
+        with pytest.raises(RuntimeError, match="Garak scan stopped: model requests kept failing for 10 min"):
             adapter.run_benchmark_job(job, _Callbacks())
         assert captured["max_retry_seconds"] == 600
         failed = [s for s in statuses if s.status == module.JobStatus.FAILED]

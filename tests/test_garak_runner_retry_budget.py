@@ -65,9 +65,10 @@ def test_retries_without_progress_exceed_the_budget(watch):
     assert exceeded[:10] == [False] * 10
     assert exceeded[10], "600 s of uninterrupted retries must exceed the 600 s budget"
     reason = watchdog.reason()
-    assert "kept failing for 10 min" in reason
+    assert "model requests kept failing for 10 min" in reason
     assert "11 retries" in reason
-    assert "HTTP 503 Service Unavailable" in reason
+    assert "HTTP 503 Service Unavailable from http://127.0.0.1:8500/v1/chat/completions" in reason
+    assert "judge, attacker, evaluator or translator" in reason  # not only the target can fail
     assert "max_retry_seconds" in reason
 
 
@@ -94,7 +95,7 @@ def test_requests_style_log_lines_are_understood(watch):
     urllib3_503 = '2026-11-23 21:06:15,001  DEBUG  http://127.0.0.1:8000 "POST /v1/chat HTTP/1.1" 503 41\n'
     urllib3_200 = '2026-11-23 21:06:15,001  DEBUG  http://127.0.0.1:8000 "POST /v1/chat HTTP/1.1" 200 812\n'
     step(1, urllib3_503 + BACKOFF)
-    assert watchdog.last_http_error == "HTTP 503"
+    assert watchdog.last_http_error == "HTTP 503 from http://127.0.0.1:8000/v1/chat"
     assert watchdog.streak_start is not None
     step(1, urllib3_200)
     assert watchdog.streak_start is None
@@ -147,6 +148,16 @@ def test_no_retries_never_trip_it(watch):
     _, step = watch
     for _ in range(100):
         assert not step(60, HTTP_200)
+
+
+def test_endpoint_in_the_reason_has_no_credentials_or_query(watch):
+    watchdog, step = watch
+    line = (
+        "2026-11-23 21:06:15,001  INFO  HTTP Request: POST https://user:secret@judge.example:8443/v1/chat"
+        '?api-version=2024&key=abc "HTTP/1.1 502 Bad Gateway"\n'
+    )
+    step(1, line + BACKOFF)
+    assert watchdog.last_http_error == "HTTP 502 Bad Gateway from https://judge.example:8443/v1/chat"
 
 
 def test_a_line_split_across_polls_is_read_once(watch):

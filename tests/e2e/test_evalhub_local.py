@@ -361,8 +361,8 @@ def test_unavailable_model_is_stopped_by_the_retry_budget(evalhub: EvalHub, mock
         f"an unavailable model reported {job['status']} / {job.get('results')}\n{evalhub.adapter_log_tail(job_id)}"
     )
     log = _adapter_log(evalhub, job_id)
-    assert "the model kept failing for 20 s with no scan progress" in log, evalhub.adapter_log_tail(job_id)
-    assert "HTTP 503" in log
+    assert "model requests kept failing for 20 s with no scan progress" in log, evalhub.adapter_log_tail(job_id)
+    assert f"HTTP 503 Service Unavailable from {mock_model.base_url}/chat/completions" in log
 
 
 # --------------------------------------------------------------------------- benchmark sweep

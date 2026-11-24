@@ -32,9 +32,21 @@ _BACKOFF_PATTERN = re.compile(r"\bBacking off \S+ for [\d.]+s\b(?: \((?P<exc>[^)
 #   httpx (openai client):  HTTP Request: POST <url> "HTTP/1.1 503 Service Unavailable"
 #   urllib3 (requests, e.g. garak's REST generator):  http://host:8000 "POST /v1/x HTTP/1.1" 200 1234
 _HTTP_STATUS_PATTERNS = (
-    re.compile(r'HTTP Request: \S+ \S+ "HTTP/[\d.]+ (?P<code>\d{3})(?: (?P<reason>[^"]*))?"'),
-    re.compile(r'"(?:GET|POST|PUT|PATCH|DELETE) \S+ HTTP/[\d.]+" (?P<code>\d{3}) '),
+    re.compile(r'HTTP Request: \S+ (?P<url>\S+) "HTTP/[\d.]+ (?P<code>\d{3})(?: (?P<reason>[^"]*))?"'),
+    re.compile(r'(?P<host>\bhttps?://\S+) "(?:GET|POST|PUT|PATCH|DELETE) (?P<path>\S+) HTTP/[\d.]+" (?P<code>\d{3}) '),
 )
+
+
+def _endpoint(status: re.Match) -> str:
+    """The request URL from a status line, without credentials or query string."""
+    groups = status.groupdict()
+    url = groups.get("url") or f"{groups.get('host', '')}{groups.get('path') or ''}"
+    url = url.split("?", 1)[0]
+    scheme, sep, rest = url.partition("://")
+    if sep and "@" in rest.split("/", 1)[0]:
+        rest = rest.split("@", 1)[1]
+    return f"{scheme}{sep}{rest}"
+
 
 # How often the retry watchdog checks scan.log and the report.
 RETRY_WATCHDOG_POLL_SECONDS = 5.0
@@ -214,7 +226,7 @@ class _RetryWatchdog:
                     continue
                 if code >= 400:
                     reason = status.groupdict().get("reason") or ""
-                    self.last_http_error = f"HTTP {code} {reason}".strip()
+                    self.last_http_error = f"HTTP {code} {reason}".strip() + f" from {_endpoint(status)}"
             backoff = _BACKOFF_PATTERN.search(line)
             if backoff:
                 if self._gap_expired(now):
@@ -243,10 +255,13 @@ class _RetryWatchdog:
             self.last_exception if self.last_exception != "GeneratorBackoffTrigger" else None
         )
         last = f"; last error: {error}" if error else ""
+        # Any model the scan calls can be the one failing: the target, or a judge, attacker,
+        # evaluator or translator. The backoff line doesn't say which; the status line's URL does.
         return (
-            f"the model kept failing for {duration} with no scan progress "
-            f"({self.retries} retries{last}). Check that the model endpoint is up, or raise "
-            "max_retry_seconds (0 disables this check)."
+            f"model requests kept failing for {duration} with no scan progress "
+            f"({self.retries} retries{last}). Check that the target model and any judge, attacker, "
+            "evaluator or translator endpoints the scan uses are up, or raise max_retry_seconds "
+            "(0 disables this check)."
         )
 
 
