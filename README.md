@@ -6,7 +6,7 @@ Automated vulnerability scanning and red teaming for Large Language Models using
 
 - 🔍 **Vulnerability Assessment**: Red-team LLMs for prompt injection, jailbreaks, toxicity, bias and other vulnerabilities
 - 📋 **Compliance**: OWASP LLM Top 10, AVID taxonomy benchmarks
-- 🎯 **Intents-based Testing**: Policy taxonomy + SDG + TAPIntent for targeted risk assessment (KFP mode)
+- 🎯 **Intents-based Testing**: Policy taxonomy + SDG + TAPIntent for targeted risk assessment (simple and KFP modes)
 - ☁️ **Cloud-Native**: Runs on OpenShift AI / Kubernetes as eval-hub jobs
 - 📊 **Detailed Reports**: JSONL, HTML, and AVID-format reports with MLflow integration
 
@@ -14,8 +14,14 @@ Automated vulnerability scanning and red teaming for Large Language Models using
 
 | Mode | How Garak Runs | Intents Support | Use Case |
 |------|---------------|-----------------|----------|
-| **Simple** | Directly in the eval-hub K8s Job pod | No | Standard scans |
-| **KFP** | K8s Job submits to Kubeflow Pipelines, polls status | Yes | Intents/SDG workflows |
+| **Simple** | Directly in the eval-hub K8s Job pod | Yes | Standard and intents scans, no extra infrastructure |
+| **KFP** | K8s Job submits to Kubeflow Pipelines, polls status | Yes | Running garak and SDG on Data Science Pipelines, with artifacts in S3 |
+
+Both modes run the intents benchmark through the same steps (taxonomy → SDG → prompts →
+scan → results). Simple mode runs them one after another in the job pod; a taxonomy or
+pre-generated prompts file comes from the job's test data (`test_data_ref`, mounted at
+`/test_data`), and `policy_s3_key` / `intents_s3_key` take its local path. KFP mode runs
+them as pipeline components that pass files through S3.
 
 ## Installation
 
@@ -60,7 +66,7 @@ Predefined scan profiles available via `benchmark_id`:
 | `avid_performance` | AVID — performance issues |
 | `quality` | Violence, profanity, toxicity, hate speech |
 | `cwe` | Common Weakness Enumeration |
-| `intents` | Intents-based risk assessment (KFP mode only) |
+| `intents` | Intents-based risk assessment (policy taxonomy + SDG + TAPIntent) |
 
 ## Job Spec Configuration
 
