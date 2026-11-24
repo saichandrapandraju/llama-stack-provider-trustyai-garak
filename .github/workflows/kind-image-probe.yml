@@ -82,14 +82,18 @@ jobs:
           enable-cache: true
           cache-dependency-glob: k8s-tests/uv.lock
 
-      - name: Install k8s-tests
+      - name: Install k8s-tests, with the local GARAK_IMG draft applied
         working-directory: k8s-tests
         run: |
+          git apply ../provider/.github/k8s-tests-garak.patch
+          git diff --stat
           uv sync --frozen
           "$MARK" "tools + k8s-tests env"
 
       - name: k8s-tests up (cluster, operator images, load, deploy)
         working-directory: k8s-tests
+        env:
+          GARAK_IMG: ${{ env.PROVIDER_IMG }}
         run: |
           uv run k8s-tests up
           "$MARK" "k8s-tests up"
@@ -119,6 +123,31 @@ jobs:
           kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/garak-probe --timeout=300s
           kubectl logs garak-probe | tee -a "$RUNNER_TEMP/notes.md"
           "$MARK" "pod from loaded image"
+
+      - name: Run the garak entry of the adapters section
+        working-directory: k8s-tests
+        env:
+          GARAK_IMG: ${{ env.PROVIDER_IMG }}
+        run: |
+          mkdir -p reports
+          uv run k8s-tests test --section adapters --pytest-args "-k garak -rA --junitxml=reports/junit.xml"
+          "$MARK" "k8s-tests adapters -k garak"
+
+      - name: Job pods and their logs
+        if: always()
+        run: |
+          set +e
+          kubectl get jobs,pods -A -o wide | grep -iE 'garak|NAME|eval'
+          for p in $(kubectl get pods -A -o name -l app.kubernetes.io/managed-by 2>/dev/null; kubectl get pods -A --no-headers | awk '/garak|quick/ {print $1"/"$2}'); do
+            ns=${p%%/*}; name=${p#*/}; echo "=== $ns/$name"; kubectl logs -n "$ns" "$name" --all-containers --tail=150
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k8s-tests-garak-report
+          path: k8s-tests/reports/
+          if-no-files-found: warn
 
       - name: What the cluster pins for garak, and what it has left
         if: always()

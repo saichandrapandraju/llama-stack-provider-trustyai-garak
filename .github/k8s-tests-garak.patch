@@ -1,0 +1,172 @@
+diff --git a/README.md b/README.md
+index 85ac3b3..5411550 100644
+--- a/README.md
++++ b/README.md
+@@ -289,6 +289,7 @@ Every one is a flag and an environment variable; `k8s-tests --help` lists them a
+ | `LMES_REPO` | `../lm-evaluation-harness` | Checkout `images-all` builds `community-lmes` from (`Dockerfile.lmes-job`) |
+ | `ADAPTERS` | `all` | `all`, `lmes`, or a comma-separated list of eval-hub-contrib adapter directories |
+ | `LMES_IMG` / `INSPECT_IMG` / `LIGHTEVAL_IMG` | *(empty)* | Adapter image overrides passed through the module operator (`RELATED_IMAGE_ODH_*`) |
++| `GARAK_IMG` | *(empty)* | garak adapter image, passed through `RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE` (`garak-provider-image` on a pre-module operator). The operator's pin needs credentials to pull, so the adapters section skips garak until this names an image the cluster can get, for example one loaded with `kind load image-archive` |
+ | `PLATFORM` | engine host platform | Platform the images are built for (`linux/arm64` on Apple Silicon) |
+ | `IMAGES_ENV_FILE` | `reports/images.env` | Where `images-all` writes the image references and `deploy` and the checks read them |
+ | `REMOVE_AFTER_PUSH` | *(empty)* | `images-all` removes each local image after pushing it; frees the podman machine's disk (incompatible with `SKIP_BUILD`) |
+diff --git a/harness/config.py b/harness/config.py
+index ec91fa7..875cafc 100644
+--- a/harness/config.py
++++ b/harness/config.py
+@@ -216,6 +216,12 @@ SETTINGS: tuple[Setting, ...] = (
+         default="",
+         help="LightEval adapter image; empty keeps the operator's pin",
+     ),
++    Setting(
++        field="garak_img",
++        envvar="GARAK_IMG",
++        default="",
++        help="garak adapter image; empty keeps the operator's pin, and the adapters section skips garak",
++    ),
+     Setting(
+         field="atif_img",
+         envvar="ATIF_IMG",
+@@ -379,6 +385,7 @@ class Settings:
+     lmes_img: str = ""
+     inspect_img: str = ""
+     lighteval_img: str = ""
++    garak_img: str = ""
+     atif_img: str = ""
+     mlflow_img: str = ""
+     timeout: str = "300s"
+diff --git a/harness/deploy.py b/harness/deploy.py
+index 2d77db5..0d2610f 100644
+--- a/harness/deploy.py
++++ b/harness/deploy.py
+@@ -67,6 +67,7 @@ RELATED_IMAGES = (
+     ("RELATED_IMAGE_ODH_TA_LMES_JOB_IMAGE", "lmes_img", "lm_evaluation_harness adapter"),
+     ("RELATED_IMAGE_ODH_EVAL_HUB_INSPECTAI_IMAGE", "inspect_img", "Inspect AI adapter"),
+     ("RELATED_IMAGE_ODH_EVAL_HUB_LIGHTEVAL_IMAGE", "lighteval_img", "LightEval adapter"),
++    ("RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE", "garak_img", "garak adapter"),
+ )
+ 
+ 
+@@ -228,6 +229,8 @@ def operand_images(settings: Settings) -> dict[str, str]:
+         images["kube-rbac-proxy"] = settings.kube_rbac_proxy_img
+     if settings.lmes_img:
+         images["lmes-pod-image"] = settings.lmes_img
++    if settings.garak_img:
++        images["garak-provider-image"] = settings.garak_img
+     return images
+ 
+ 
+diff --git a/tests/evalhub/test_evalhub_adapters.py b/tests/evalhub/test_evalhub_adapters.py
+index 1de7366..d45760f 100644
+--- a/tests/evalhub/test_evalhub_adapters.py
++++ b/tests/evalhub/test_evalhub_adapters.py
+@@ -1,7 +1,7 @@
+ """Checks for the EvalHub adapters: the section that runs real benchmarks.
+ 
+-Each job here hands one benchmark of the `lm_evaluation_harness` provider to its
+-adapter through the EvalHub API, against the LLM emulator the fixtures deploy or,
++Each job here hands one benchmark of a provider to its adapter through the
++EvalHub API, against the LLM emulator the fixtures deploy or,
+ when `MODEL_URL` is set, a real endpoint, waits for the adapter to finish in the
+ cluster, and reads the result back. `BENCHMARKS` is what the section covers; a new
+ benchmark is one entry there, and every check below then runs once for it.
+@@ -17,6 +17,7 @@ the Hub - so it is never part of a default run: `k8s-tests test` excludes the
+ from __future__ import annotations
+ 
+ import logging
++import os
+ from dataclasses import dataclass
+ from typing import Any
+ 
+@@ -34,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
+ pytestmark = [pytest.mark.evalhub, pytest.mark.adapters]
+ 
+ LM_EVAL_PROVIDER = "lm_evaluation_harness"
++GARAK_PROVIDER = "garak"
+ # One example: enough for the harness to score, small enough for a Kind cluster.
+ DEFAULT_NUM_EXAMPLES = 1
+ # Longer than the harness smoke job's budget: a cold run pulls the adapter image
+@@ -51,17 +53,27 @@ class Benchmark:
+     # results the job reports.
+     primary_metric: str | None = None
+     num_examples: int = DEFAULT_NUM_EXAMPLES
++    # The image setting the benchmark needs, for a provider whose operator pin cannot be
++    # pulled anonymously; None runs it against whatever the operator pins.
++    requires_image: str | None = None
+ 
+ 
+ # ethics_cm is the commonsense split of hendrycks/ethics in lm-evaluation-harness,
+ # which the provider config scores on `acc`.
+-BENCHMARKS: tuple[Benchmark, ...] = (Benchmark(id="ethics_cm", primary_metric="acc"),)
++# garak's `quick` is one DAN probe scored by string-matching detectors, so nothing is
++# downloaded. The operator pins quay.io/trustyai/llama-stack-provider-trustyai-garak:latest,
++# which needs credentials to pull, so it runs only when GARAK_IMG names an image the
++# cluster can get.
++BENCHMARKS: tuple[Benchmark, ...] = (
++    Benchmark(id="ethics_cm", primary_metric="acc"),
++    Benchmark(id="quick", provider_id=GARAK_PROVIDER, primary_metric="attack_success_rate", requires_image="GARAK_IMG"),
++)
+ 
+ 
+ def job_payload(benchmark: Benchmark, model: ModelEndpoint, credentials_secret: str | None) -> dict[str, Any]:
+     """The job body a user would submit for one benchmark against the model."""
+     payload: dict[str, Any] = {
+-        "name": f"model-{benchmark.id}",
++        "name": f"model-{benchmark.provider_id}-{benchmark.id}",
+         "model": {
+             "url": model.url,
+             "name": model.name,
+@@ -79,10 +91,15 @@ def job_payload(benchmark: Benchmark, model: ModelEndpoint, credentials_secret:
+     return payload
+ 
+ 
+-@pytest.fixture(scope="module", params=BENCHMARKS, ids=[benchmark.id for benchmark in BENCHMARKS])
++@pytest.fixture(
++    scope="module", params=BENCHMARKS, ids=[f"{benchmark.provider_id}-{benchmark.id}" for benchmark in BENCHMARKS]
++)
+ def benchmark(request: pytest.FixtureRequest) -> Benchmark:
+     """The benchmark under test; every check runs once per entry in BENCHMARKS."""
+-    return request.param
++    benchmark: Benchmark = request.param
++    if benchmark.requires_image and not os.environ.get(benchmark.requires_image, "").strip():
++        pytest.skip(f"{benchmark.provider_id}/{benchmark.id} needs {benchmark.requires_image} set to a pullable image")
++    return benchmark
+ 
+ 
+ @pytest.fixture(scope="module")
+diff --git a/tests/harness/test_deploy.py b/tests/harness/test_deploy.py
+index 6b8b2e1..9780984 100644
+--- a/tests/harness/test_deploy.py
++++ b/tests/harness/test_deploy.py
+@@ -21,6 +21,7 @@ def test_each_operand_image_named_becomes_its_related_image():
+         lmes_img="quay.io/me/lmes:mine",
+         inspect_img="quay.io/me/inspect:mine",
+         lighteval_img="quay.io/me/lighteval:mine",
++        garak_img="quay.io/me/garak:mine",
+         kube_rbac_proxy_img="quay.io/me/proxy:mine",
+     )
+     variables = dict(deploy.related_image_env(settings))
+@@ -28,6 +29,7 @@ def test_each_operand_image_named_becomes_its_related_image():
+     assert variables["RELATED_IMAGE_ODH_TA_LMES_JOB_IMAGE"] == "quay.io/me/lmes:mine"
+     assert variables["RELATED_IMAGE_ODH_EVAL_HUB_INSPECTAI_IMAGE"] == "quay.io/me/inspect:mine"
+     assert variables["RELATED_IMAGE_ODH_EVAL_HUB_LIGHTEVAL_IMAGE"] == "quay.io/me/lighteval:mine"
++    assert variables["RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE"] == "quay.io/me/garak:mine"
+     assert variables["RELATED_IMAGE_ODH_KUBE_RBAC_PROXY_IMAGE"] == "quay.io/me/proxy:mine"
+     assert variables["RELATED_IMAGE_ODH_TRUSTYAI_SERVICE_PY_IMAGE"] == Settings().trustyai_service_img
+ 
+@@ -251,6 +253,7 @@ def test_the_single_layout_hands_over_every_operand_image_it_was_given():
+             evalhub_img="quay.io/opendatahub/odh-eval-hub:odh-3.5",
+             lmes_img="quay.io/opendatahub/ta-lmes-job:odh-3.5",
+             kube_rbac_proxy_img="quay.io/opendatahub/odh-kube-rbac-proxy:odh-stable",
++            garak_img="quay.io/me/garak:mine",
+             trustyai_service_img="quay.io/trustyai/trustyai-service:latest",
+         )
+     )
+@@ -259,6 +262,7 @@ def test_the_single_layout_hands_over_every_operand_image_it_was_given():
+         "evalHubImage": "quay.io/opendatahub/odh-eval-hub:odh-3.5",
+         "kube-rbac-proxy": "quay.io/opendatahub/odh-kube-rbac-proxy:odh-stable",
+         "lmes-pod-image": "quay.io/opendatahub/ta-lmes-job:odh-3.5",
++        "garak-provider-image": "quay.io/me/garak:mine",
+     }
+     assert deploy.operand_images(Settings(evalhub_img="", lmes_img="")) == {
+         "trustyaiServiceImage": "quay.io/trustyai/trustyai-service:latest"
