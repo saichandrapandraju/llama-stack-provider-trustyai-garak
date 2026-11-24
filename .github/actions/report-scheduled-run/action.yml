@@ -3,7 +3,8 @@ description: >-
   Keep one open issue per scheduled check. On failure, open it (or comment on it); on success,
   close it. With `key`, a failure with the same key as the last report adds nothing, so a
   condition that persists for days (e.g. version drift) is reported once, not every night.
-  The job using this needs `permissions: issues: write`.
+  The job using this needs `permissions: issues: write`; give it a `concurrency` group per label
+  so overlapping runs (e.g. a re-run during the schedule) can't open two issues.
 inputs:
   outcome:
     description: "`failure` opens or updates the issue, `success` closes it."
@@ -44,15 +45,17 @@ runs:
         KEY: ${{ inputs.key }}
       run: |
         set -euo pipefail
-        existing=$(gh issue list --label "$LABEL" --state open --json number --jq '.[0].number // empty')
+        open_issues=$(gh issue list --label "$LABEL" --state open --json number --jq '.[].number')
 
         if [ "$OUTCOME" = "success" ]; then
-          if [ -n "$existing" ]; then
-            gh issue close "$existing" --comment "The scheduled run passed again: ${RUN_URL}"
-            echo "Closed #${existing}"
-          fi
+          # Close every open issue with the label, so a stray duplicate doesn't stay open.
+          for number in $open_issues; do
+            gh issue close "$number" --comment "The scheduled run passed again: ${RUN_URL}"
+            echo "Closed #${number}"
+          done
           exit 0
         fi
+        existing=$(head -n1 <<<"$open_issues")  # newest first
         [ "$OUTCOME" = "failure" ] || { echo "::error::outcome must be failure or success, got '$OUTCOME'"; exit 1; }
 
         marker="<!-- scheduled-run-key: ${KEY} -->"

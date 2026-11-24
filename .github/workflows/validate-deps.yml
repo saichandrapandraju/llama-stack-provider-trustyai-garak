@@ -133,7 +133,7 @@ jobs:
   report-drift:
     name: Report garak drift
     # Scheduled runs only: keeps one open "garak-drift" issue while the pin lags the latest fork
-    # tag (one comment per new tag, not one per night) and closes it once the pin catches up.
+    # tag (one comment per new pin/tag pair, not one per night) and closes it once the pin catches up.
     needs: check-garak-drift
     if: >-
       always() && github.event_name == 'schedule' &&
@@ -142,6 +142,9 @@ jobs:
     permissions:
       contents: read
       issues: write
+    concurrency:
+      group: report-garak-drift
+      cancel-in-progress: false
 
     steps:
       - uses: actions/checkout@v4
@@ -158,7 +161,10 @@ jobs:
             ${{ needs.check-garak-drift.outputs.latest &&
             format('garak {0} is available (pinned: {1})', needs.check-garak-drift.outputs.latest, needs.check-garak-drift.outputs.pinned) ||
             'Scheduled garak drift check failing' }}
-          key: ${{ needs.check-garak-drift.outputs.latest }}
+          # Both versions: a newer tag, or a bump that still trails it, updates the issue once.
+          key: >-
+            ${{ needs.check-garak-drift.outputs.latest &&
+            format('{0} -> {1}', needs.check-garak-drift.outputs.pinned, needs.check-garak-drift.outputs.latest) || '' }}
           body: |
             The trustyai garak fork has a newer tag than the one this repo pins.
 

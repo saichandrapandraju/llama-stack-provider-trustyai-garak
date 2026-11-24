@@ -208,13 +208,17 @@ jobs:
 
   report-nightly:
     name: Report nightly failure
-    # Scheduled runs only: opens (or comments on) the "e2e-nightly" issue when a job fails and
-    # closes it after a night where every job passes.
+    # Scheduled runs only: opens (or comments on) the "e2e-nightly" issue when any job fails, even
+    # if another was cancelled, and closes it only after a night where every job passed.
     needs: [canary, sweep]
     if: >-
       always() && github.event_name == 'schedule' &&
-      !contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped')
+      (contains(needs.*.result, 'failure') ||
+       (!contains(needs.*.result, 'cancelled') && !contains(needs.*.result, 'skipped')))
     runs-on: ubuntu-latest
+    concurrency:
+      group: report-e2e-nightly
+      cancel-in-progress: false
     permissions:
       contents: read
       issues: write
@@ -230,6 +234,8 @@ jobs:
           label: e2e-nightly
           label-description: Nightly EvalHub e2e failure
           title: Nightly EvalHub e2e failing
+          # One comment per failing night: re-running the same run doesn't comment again.
+          key: run-${{ github.run_id }}
           body: |
             Nightly EvalHub e2e failed.
 
