@@ -27,12 +27,21 @@ The `intents` benchmark uses SDG and adversarial probes for targeted risk assess
 3. Scans the model with TAPIntent probes (tree-of-attacks with persuasion)
 4. Evaluates responses with MulticlassJudge detector
 
-**Only KFP mode supports intents** because it requires the full six-step
-pipeline (`core/pipeline_steps.py`) running as KFP components:
+Both execution modes support intents. They run the same steps from
+`core/pipeline_steps.py`:
 
 ```
-validate → taxonomy → SDG → prompts → scan → parse
+taxonomy → SDG → prompts → scan → parse
 ```
+
+- **Simple mode** (`GarakAdapter._run_simple_intents`): the steps run one after
+  another in the eval-hub job pod. A taxonomy (`policy_s3_key`) or pre-generated
+  prompts file (`intents_s3_key`) is a local path under `/test_data`, which the
+  eval-hub SDK fills from the job's `test_data_ref`.
+- **KFP mode** (`evalhub/kfp_pipeline.py`): each step is a KFP component, and
+  files pass between them through S3. The pipeline starts with a `validate`
+  component (`validate_scan_config`: garak is importable, the config has a
+  `plugins` section, no blocked flags), which simple mode does not run.
 
 ### Intents Model Configuration
 
@@ -101,8 +110,8 @@ Benchmark Profile (predefined in config.py)
 |--------|---------|---------|
 | `garak_command_config.py` | Pydantic models for garak YAML config | All modes |
 | `config.py` | Scan profiles (GarakScanConfig, TapIntentConfig) | All modes |
-| `intents.py` | Policy taxonomy dataset loading | KFP mode (intents) |
-| `sdg.py` | Synthetic data generation via sdg-hub | KFP mode (intents) |
+| `intents.py` | Policy taxonomy dataset loading | Intents (both modes) |
+| `sdg.py` | Synthetic data generation via sdg-hub | Intents (both modes) |
 | `result_utils.py` | Parse garak outputs, TBSA scoring, HTML reports | All modes |
 | `constants.py` | KFP image keys, execution mode constants | All modes |
 

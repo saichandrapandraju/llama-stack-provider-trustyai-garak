@@ -94,26 +94,27 @@ that only runs for same-repository pull requests.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed module-by-module breakdown.
 
-This repo contains **two independent integrations** that share core logic:
-
 ```
 src/llama_stack_provider_trustyai_garak/
-├── core/           # Shared logic (config, commands, pipeline steps) — used by ALL modes
-├── inline/         # Llama Stack Inline mode (local garak)
-├── remote/         # Llama Stack Remote KFP mode (KFP pipelines)
-├── evalhub/        # Eval-Hub adapter (simple + KFP modes, NO Llama Stack dependency)
+├── core/           # Shared logic (config resolution, commands, runner, pipeline steps)
+├── evalhub/        # Eval-Hub adapter (simple + KFP modes)
+├── config.py       # Benchmark profiles (GarakScanConfig)
 └── resources/      # Report templates and chart specs
 tests/              # Unit tests (no external deps needed)
+tests/e2e/          # EvalHub contract tests (real eval-hub server + garak, mock model)
 ```
 
-Only the KFP-based modes (Llama Stack Remote and Eval-Hub KFP) support the
-**intents benchmark** — see ARCHITECTURE.md for details.
+Both execution modes (simple and KFP) support the **intents benchmark**; see
+ARCHITECTURE.md for details.
 
 ## Adding a Benchmark Profile
 
-1. Define the profile dict in `base_eval.py` under `_BENCHMARK_PROFILES`
+1. Add the profile to `GarakScanConfig` in `config.py`: `FRAMEWORK_PROFILES` for a
+   framework selected by garak taxonomy tags, `SCAN_PROFILES` for an explicit probe list
 2. Add tests in `tests/test_evalhub_adapter.py`
-3. Document in `BENCHMARK_METADATA_REFERENCE.md`
+3. List it in the benchmark table in `README.md`
+4. Add it to eval-hub's garak catalog (`garak.yaml`) so eval-hub serves it. Until then
+   the e2e sweep runs it as `<id>-adapter-only` and warns (see `tests/e2e/README.md`)
 
 ## Code Conventions
 
