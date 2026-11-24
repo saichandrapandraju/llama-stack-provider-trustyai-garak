@@ -10,6 +10,7 @@ import stat
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -77,23 +78,69 @@ def test_report_progress_resets_the_streak(watch):
         assert not step(60, HTTP_503 + BACKOFF, report_text='{"entry_type": "attempt"}\n' if i % 5 == 4 else "")
 
 
-def test_a_quiet_gap_ends_the_streak(watch):
-    """One transient retry followed by a long, healthy stretch (e.g. a slow probe) never trips it."""
+def test_successful_responses_reset_the_streak_without_report_progress(watch):
+    """The earlystop harness (intents) writes no report lines until a whole probe finishes, which
+    can take hours. Intermittent rate limiting during it must not stop a scan that's progressing."""
     watchdog, step = watch
-    assert not step(1, BACKOFF)
-    for _ in range(20):
+    for minute in range(120):
+        answered = HTTP_200 if minute % 4 == 3 else ""  # a successful response every 4 min
+        assert not step(60, HTTP_503 + BACKOFF + answered), f"stopped at minute {minute}"
+    assert watchdog.retries < 4
+
+
+def test_requests_style_log_lines_are_understood(watch):
+    """garak's REST generator uses requests; urllib3 logs its status lines differently from httpx."""
+    watchdog, step = watch
+    urllib3_503 = '2026-11-23 21:06:15,001  DEBUG  http://127.0.0.1:8000 "POST /v1/chat HTTP/1.1" 503 41\n'
+    urllib3_200 = '2026-11-23 21:06:15,001  DEBUG  http://127.0.0.1:8000 "POST /v1/chat HTTP/1.1" 200 812\n'
+    step(1, urllib3_503 + BACKOFF)
+    assert watchdog.last_http_error == "HTTP 503"
+    assert watchdog.streak_start is not None
+    step(1, urllib3_200)
+    assert watchdog.streak_start is None
+
+
+def test_a_transient_retry_followed_by_healthy_responses(watch):
+    """One retry, then a long healthy stretch with no report lines (e.g. a slow probe): never trips."""
+    watchdog, step = watch
+    assert not step(1, HTTP_503 + BACKOFF)
+    for _ in range(40):
         assert not step(60, HTTP_200)
     assert watchdog.streak_start is None
 
 
-def test_streak_restarts_after_a_gap(watch):
-    _, step = watch
+def test_slow_failures_are_caught(watch):
+    """A gateway that returns 504 only after minutes: retries are far apart but the model never answers."""
+    watchdog, step = watch
+    http_504 = HTTP_503.replace("503 Service Unavailable", "504 Gateway Timeout")
+    assert not step(1, http_504 + BACKOFF)
+    assert not step(400, http_504 + BACKOFF)  # more than RETRY_STREAK_GAP_SECONDS apart
+    assert step(400, http_504 + BACKOFF)  # 800 s of failures > 600 s budget
+    assert "HTTP 504 Gateway Timeout" in watchdog.reason()
+
+
+def test_request_timeouts_are_caught(watch):
+    """A model that never answers: the client times out (no HTTP status logged for it) and garak
+    retries. The retries are ~30 min apart with the openai SDK defaults, so the streak can't
+    depend on them being close together."""
+    watchdog, step = watch
+    timeout = BACKOFF.replace("garak.exception.GeneratorBackoffTrigger", "openai.APITimeoutError")
+    assert not step(1, HTTP_200)  # e.g. the connectivity check before the scan
+    assert not step(1, timeout)
+    assert step(1800, timeout)
+    assert "last error: APITimeoutError" in watchdog.reason()
+
+
+def test_without_http_status_lines_a_quiet_gap_ends_the_streak(watch):
+    """If the client logs no HTTP status lines, a success would be invisible; fall back to the gap."""
+    watchdog, step = watch
     assert not step(1, BACKOFF)
     assert not step(400, BACKOFF)  # 400 s since the last retry (> 300 s gap): a new streak starts
     assert not step(500, BACKOFF)  # again > 300 s: the streak starts over here
     for _ in range(9):
         assert not step(60, BACKOFF)  # 540 s into the streak
     assert step(60, BACKOFF)  # 600 s of retries, each within 300 s of the last
+    assert "last error" not in watchdog.reason()  # GeneratorBackoffTrigger alone says nothing useful
 
 
 def test_no_retries_never_trip_it(watch):
@@ -193,3 +240,47 @@ def test_timeout_still_applies_with_the_watchdog(fake_garak):
     assert result.timed_out
     assert result.retry_budget_reason is None
     assert elapsed < 15
+
+
+# --------------------------------------------------------------------------- KFP component
+
+
+@pytest.mark.parametrize("installed_accepts_budget", [True, False], ids=["current-image", "older-image"])
+def test_kfp_scan_component_tolerates_an_older_base_image(monkeypatch, tmp_path, installed_accepts_budget):
+    """The component body is compiled from the adapter but runs against the base image's package.
+
+    An older image's setup_and_run_garak has no max_retry_seconds; the component must still run
+    the scan (without a budget) instead of failing every KFP scan with a TypeError.
+    """
+    from llama_stack_provider_trustyai_garak.core import pipeline_steps
+    from llama_stack_provider_trustyai_garak.errors import GarakError
+    from llama_stack_provider_trustyai_garak.evalhub import kfp_pipeline
+
+    calls = []
+
+    def current(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=1800):
+        calls.append({"timeout_seconds": timeout_seconds, "max_retry_seconds": max_retry_seconds})
+        return SimpleNamespace(success=True, returncode=0)
+
+    def older(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        calls.append({"timeout_seconds": timeout_seconds})
+        return SimpleNamespace(success=True, returncode=0)
+
+    monkeypatch.setattr(pipeline_steps, "setup_and_run_garak", current if installed_accepts_budget else older)
+    monkeypatch.delenv("AWS_S3_BUCKET", raising=False)
+    empty = tmp_path / "prompts.csv"
+    empty.write_text("")
+
+    # With no S3 configured the component fails after the scan, when it uploads; that's expected here.
+    with pytest.raises(GarakError, match="S3 not configured"):
+        kfp_pipeline.garak_scan.python_func(
+            config_json="{}",
+            s3_prefix="job/exec",
+            timeout_seconds=0,
+            max_retry_seconds=60,
+            hf_cache_path="",
+            prompts_dataset=SimpleNamespace(path=str(empty)),
+        )
+
+    expected = {"timeout_seconds": 0, "max_retry_seconds": 60} if installed_accepts_budget else {"timeout_seconds": 0}
+    assert calls == [expected]

@@ -591,12 +591,23 @@ def garak_scan(
     prompts_path = Path(prompts_dataset.path)
     has_prompts = prompts_path.exists() and prompts_path.stat().st_size > 0
 
+    # This body is compiled from the adapter's package but runs against the package installed in
+    # the base image, which can be older (e.g. a pinned or operator-configured image). Only pass
+    # arguments the installed setup_and_run_garak accepts, so version skew can't fail every scan.
+    import inspect
+
+    scan_kwargs = {}
+    if "max_retry_seconds" in inspect.signature(setup_and_run_garak).parameters:
+        scan_kwargs["max_retry_seconds"] = max_retry_seconds
+    else:
+        log.warning("The base image's adapter predates max_retry_seconds; scanning without a retry budget")
+
     result = setup_and_run_garak(
         config_json=config_json,
         prompts_csv_path=prompts_path if has_prompts else None,
         scan_dir=scan_dir,
         timeout_seconds=timeout_seconds,
-        max_retry_seconds=max_retry_seconds,
+        **scan_kwargs,
     )
 
     # Redact api_key values from config.json before uploading to S3

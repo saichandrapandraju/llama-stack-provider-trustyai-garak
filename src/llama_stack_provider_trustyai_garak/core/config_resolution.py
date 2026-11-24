@@ -275,13 +275,14 @@ def resolve_timeout_seconds(
 def resolve_max_retry_seconds(benchmark_config: Mapping[str, Any], default: int) -> int:
     """Retry budget from the benchmark parameters (``max_retry_seconds``); 0 disables it."""
     value = (benchmark_config or {}).get("max_retry_seconds")
-    if value is not None:
+    if value is not None and not isinstance(value, bool):  # int(True) would be a 1 s budget
         try:
             seconds = int(value)
             if seconds >= 0:
                 return seconds
         except (TypeError, ValueError):
             pass
+    if value is not None:
         logger.warning("Ignoring invalid max_retry_seconds=%r; using %s", value, default)
     return default
 

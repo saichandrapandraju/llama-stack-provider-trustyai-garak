@@ -147,6 +147,7 @@ def test_resolve_timeout_seconds_precedence():
         ({"max_retry_seconds": -1}, 1800),
         ({"max_retry_seconds": "abc"}, 1800),
         ({"max_retry_seconds": None}, 1800),
+        ({"max_retry_seconds": True}, 1800),  # not a 1 s budget
     ],
 )
 def test_resolve_max_retry_seconds(parameters, expected):

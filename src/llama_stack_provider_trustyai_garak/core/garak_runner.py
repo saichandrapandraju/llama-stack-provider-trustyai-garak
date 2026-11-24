@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
+from ..constants import DEFAULT_MAX_RETRY_SECONDS
+
 logger = logging.getLogger(__name__)
 _STDERR_WARNING_PATTERN = re.compile(
     r"(?:\berror\b|\bexception\b|\btraceback\b|\bfailed\b|\bfatal\b|\bwarn(?:ing)?\b|⚠)",
@@ -23,15 +25,21 @@ _SCAN_LOG_ISSUE_PATTERN = re.compile(
     r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2},\d+\s+(ERROR|WARNING)\s+(.+)$",
 )
 # garak retries a failed model request (HTTP 5xx, 429, timeouts) through the backoff library,
-# which logs this line to scan.log before every wait.
-_BACKOFF_PATTERN = re.compile(r"\bBacking off \S+ for [\d.]+s\b")
-# httpx logs every request's status line to scan.log, e.g. 'HTTP Request: POST <url> "HTTP/1.1 503 Service Unavailable"'.
-_HTTP_STATUS_PATTERN = re.compile(r'HTTP Request: \S+ \S+ "HTTP/[\d.]+ (\d{3})(?: ([^"]*))?"')
+# which logs this line to scan.log before every wait, e.g.
+#   Backing off _call_model(...) for 1.3s (garak.exception.GeneratorBackoffTrigger)
+_BACKOFF_PATTERN = re.compile(r"\bBacking off \S+ for [\d.]+s\b(?: \((?P<exc>[^)]+)\))?")
+# garak logs at DEBUG to scan.log, which includes the HTTP client's line for every model request:
+#   httpx (openai client):  HTTP Request: POST <url> "HTTP/1.1 503 Service Unavailable"
+#   urllib3 (requests, e.g. garak's REST generator):  http://host:8000 "POST /v1/x HTTP/1.1" 200 1234
+_HTTP_STATUS_PATTERNS = (
+    re.compile(r'HTTP Request: \S+ \S+ "HTTP/[\d.]+ (?P<code>\d{3})(?: (?P<reason>[^"]*))?"'),
+    re.compile(r'"(?:GET|POST|PUT|PATCH|DELETE) \S+ HTTP/[\d.]+" (?P<code>\d{3}) '),
+)
 
 # How often the retry watchdog checks scan.log and the report.
 RETRY_WATCHDOG_POLL_SECONDS = 5.0
-# A request that keeps failing logs a new "Backing off" line at least this often: garak caps the
-# wait between retries at 70 s. A longer quiet gap means requests got through, so the streak ends.
+# Fallback for logs without HTTP status lines (a client that doesn't log them): a retry streak
+# also ends when no new "Backing off" line appears for this long.
 RETRY_STREAK_GAP_SECONDS = 300.0
 
 
@@ -117,12 +125,19 @@ class _RetryWatchdog:
     that apart from a long scan against a slow model, so this watches for the failure itself:
 
     - a retry streak starts at the first "Backing off" line in scan.log;
-    - it ends when the report grows (an attempt or evaluation was written), or when no new
-      "Backing off" line appears for ``gap_seconds``, i.e. requests are getting through;
+    - it ends on any sign of progress: a successful (2xx) model response in scan.log, or the
+      report growing (an attempt or evaluation was written);
     - the budget is exceeded when a streak has lasted ``budget_seconds``.
 
-    A slow but healthy model never triggers it: it causes no retries. With parallel attempts,
-    any attempt that completes resets the streak.
+    Time between retries doesn't end a streak: a request that times out or hits a slow gateway
+    error (e.g. a 504 after minutes) can take far longer than the backoff wait to fail. Only if
+    scan.log has no HTTP status lines at all, so a success would be invisible, does a quiet gap
+    of ``gap_seconds`` without a new retry end the streak instead.
+
+    A successful response counts because the report alone is not a progress signal: the
+    earlystop harness (intents) writes nothing until a whole probe finishes, which can take
+    hours while the models answer normally. A slow but healthy model never triggers it (it
+    causes no retries), and neither does rate limiting that lets some requests through.
     """
 
     def __init__(
@@ -145,11 +160,15 @@ class _RetryWatchdog:
         self.last_backoff: float | None = None
         self.retries = 0
         self.last_http_error: str | None = None
+        self.last_exception: str | None = None
+        self.saw_http_status = False
 
     def _reset(self) -> None:
         self.streak_start = None
         self.last_backoff = None
         self.retries = 0
+        self.last_http_error = None
+        self.last_exception = None
 
     def _new_log_lines(self) -> list[str]:
         try:
@@ -186,27 +205,44 @@ class _RetryWatchdog:
         if self._report_grew():
             self._reset()
         for line in self._new_log_lines():
-            status = _HTTP_STATUS_PATTERN.search(line)
-            if status and int(status.group(1)) >= 400:
-                self.last_http_error = f"HTTP {status.group(1)} {status.group(2) or ''}".strip()
-            if _BACKOFF_PATTERN.search(line):
-                if self.last_backoff is not None and now - self.last_backoff > self.gap_seconds:
+            status = next((m for m in (p.search(line) for p in _HTTP_STATUS_PATTERNS) if m), None)
+            if status:
+                self.saw_http_status = True
+                code = int(status.group("code"))
+                if 200 <= code < 300:  # the model answered: not stuck
+                    self._reset()
+                    continue
+                if code >= 400:
+                    reason = status.groupdict().get("reason") or ""
+                    self.last_http_error = f"HTTP {code} {reason}".strip()
+            backoff = _BACKOFF_PATTERN.search(line)
+            if backoff:
+                if self._gap_expired(now):
                     self._reset()
                 if self.streak_start is None:
                     self.streak_start = now
                 self.last_backoff = now
                 self.retries += 1
-        if self.streak_start is None or self.last_backoff is None:
+                if backoff.group("exc"):
+                    self.last_exception = backoff.group("exc").rsplit(".", 1)[-1]
+        if self.streak_start is None:
             return False
-        if now - self.last_backoff > self.gap_seconds:
+        if self._gap_expired(now):
             self._reset()
             return False
         return now - self.streak_start >= self.budget_seconds
 
+    def _gap_expired(self, now: float) -> bool:
+        return not self.saw_http_status and self.last_backoff is not None and now - self.last_backoff > self.gap_seconds
+
     def reason(self) -> str:
         minutes = self.budget_seconds / 60
         duration = f"{minutes:g} min" if minutes >= 1 else f"{self.budget_seconds:g} s"
-        last = f"; last error: {self.last_http_error}" if self.last_http_error else ""
+        # GeneratorBackoffTrigger is garak's generic wrapper; the HTTP status says more.
+        error = self.last_http_error or (
+            self.last_exception if self.last_exception != "GeneratorBackoffTrigger" else None
+        )
+        last = f"; last error: {error}" if error else ""
         return (
             f"the model kept failing for {duration} with no scan progress "
             f"({self.retries} retries{last}). Check that the model endpoint is up, or raise "
@@ -247,7 +283,7 @@ def run_garak_scan(
     report_prefix: Path,
     env: dict[str, str] | None = None,
     log_file: Path | None = None,
-    max_retry_seconds: int | None = None,
+    max_retry_seconds: int | None = DEFAULT_MAX_RETRY_SECONDS,
 ) -> GarakScanResult:
     """Run a Garak scan with proper process group handling.
 
