@@ -16,7 +16,7 @@ from typing import Any
 
 import pandas as pd
 
-from ..constants import DEFAULT_SDG_FLOW_ID
+from ..constants import DEFAULT_MAX_RETRY_SECONDS, DEFAULT_SDG_FLOW_ID
 from ..errors import GarakError, GarakValidationError
 
 from .garak_runner import GarakScanResult
@@ -584,6 +584,7 @@ def setup_and_run_garak(
     prompts_csv_path: Path | str | None,
     scan_dir: Path,
     timeout_seconds: int,
+    max_retry_seconds: int = DEFAULT_MAX_RETRY_SECONDS,
 ) -> "GarakScanResult":
     """Configure and run a Garak scan with optional intent-stub generation.
 
@@ -630,8 +631,9 @@ def setup_and_run_garak(
                 )
 
     logger.info(
-        "Starting garak scan (timeout=%ss, output=%s)",
+        "Starting garak scan (timeout=%ss, max_retry_seconds=%s, output=%s)",
         timeout_seconds,
+        max_retry_seconds,
         scan_dir,
     )
 
@@ -642,6 +644,7 @@ def setup_and_run_garak(
         report_prefix=report_prefix,
         log_file=log_file,
         env=scan_env,
+        max_retry_seconds=max_retry_seconds,
     )
 
     if result.success:
@@ -659,7 +662,7 @@ def setup_and_run_garak(
         error_msg = (
             f"Garak scan failed (rc={result.returncode}, "
             f"timed_out={result.timed_out}): "
-            f"{result.stderr[:500] if result.stderr else 'no stderr'}"
+            f"{result.retry_budget_reason or (result.stderr[:500] if result.stderr else 'no stderr')}"
         )
         if result.log_errors:
             error_msg += "\nscan.log errors:\n" + "\n".join(result.log_errors)

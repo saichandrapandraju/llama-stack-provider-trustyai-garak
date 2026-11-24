@@ -8,6 +8,7 @@ Targets:
 
 - ``mock-refuser``  always refuses, so detectors find no hits.
 - ``mock-complier`` always plays along with a DAN-style jailbreak, so they do.
+- ``mock-unavailable`` answers every request with HTTP 503, like a backend that is down.
 
 Helper roles for the intents benchmark, each answering in the format garak or
 sdg-hub parses:
@@ -46,6 +47,7 @@ from typing import Any
 
 REFUSER = "mock-refuser"
 COMPLIER = "mock-complier"
+UNAVAILABLE = "mock-unavailable"
 SDG = "mock-sdg"
 ATTACKER = "mock-attacker"
 EVALUATOR = "mock-evaluator"
@@ -175,7 +177,7 @@ def _make_handler(state: MockState) -> type[BaseHTTPRequestHandler]:
             if path == "/__stats":
                 self._send(200, state.snapshot())
             elif path.endswith("/models"):
-                models = [{"id": m, "object": "model", "owned_by": "mock"} for m in (*REPLIES, *ROLES)]
+                models = [{"id": m, "object": "model", "owned_by": "mock"} for m in (*REPLIES, UNAVAILABLE, *ROLES)]
                 self._send(200, {"object": "list", "data": models})
             else:
                 # garak probes the base URI for connectivity before a scan; any 2xx works.
@@ -201,6 +203,10 @@ def _make_handler(state: MockState) -> type[BaseHTTPRequestHandler]:
             state.record(model, token, authorized)
             if not authorized:
                 self._send(401, {"error": {"message": "invalid api key", "type": "invalid_request_error"}})
+                return
+
+            if model == UNAVAILABLE:  # garak retries 503 with no limit; the adapter's retry budget stops it
+                self._send(503, {"error": {"message": "mock service unavailable", "type": "server_error"}})
                 return
 
             messages = body.get("messages") or [{"role": "user", "content": body.get("prompt", "")}]

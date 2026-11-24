@@ -272,10 +272,25 @@ def resolve_timeout_seconds(
     return default_timeout
 
 
+def resolve_max_retry_seconds(benchmark_config: Mapping[str, Any], default: int) -> int:
+    """Retry budget from the benchmark parameters (``max_retry_seconds``); 0 disables it."""
+    value = (benchmark_config or {}).get("max_retry_seconds")
+    if value is not None:
+        try:
+            seconds = int(value)
+            if seconds >= 0:
+                return seconds
+        except (TypeError, ValueError):
+            pass
+        logger.warning("Ignoring invalid max_retry_seconds=%r; using %s", value, default)
+    return default
+
+
 __all__ = [
     "build_effective_garak_config",
     "deep_merge_dicts",
     "legacy_overrides_from_benchmark_config",
     "resolve_scan_profile",
+    "resolve_max_retry_seconds",
     "resolve_timeout_seconds",
 ]

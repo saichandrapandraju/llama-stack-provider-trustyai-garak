@@ -17,6 +17,7 @@ from evalhub.adapter.models.job import JobSpec as SDKJobSpec
 from llama_stack_provider_trustyai_garak.core.config_resolution import (
     build_effective_garak_config,
     resolve_scan_profile,
+    resolve_max_retry_seconds,
     resolve_timeout_seconds,
 )
 from llama_stack_provider_trustyai_garak.core.garak_runner import convert_to_avid_report
@@ -137,6 +138,22 @@ def test_resolve_timeout_seconds_precedence():
 
 
 @pytest.mark.parametrize(
+    ("parameters", "expected"),
+    [
+        ({}, 1800),
+        ({"max_retry_seconds": 600}, 600),
+        ({"max_retry_seconds": "900"}, 900),
+        ({"max_retry_seconds": 0}, 0),  # disables the retry budget
+        ({"max_retry_seconds": -1}, 1800),
+        ({"max_retry_seconds": "abc"}, 1800),
+        ({"max_retry_seconds": None}, 1800),
+    ],
+)
+def test_resolve_max_retry_seconds(parameters, expected):
+    assert resolve_max_retry_seconds(parameters, 1800) == expected
+
+
+@pytest.mark.parametrize(
     "benchmark_id",
     ["owasp_llm_top10", "avid", "avid_security", "avid_ethics", "avid_performance", "quality", "cwe", "intents"],
 )
@@ -223,10 +240,12 @@ def test_run_benchmark_job_uses_garak_config_file(monkeypatch, tmp_path):
         report_prefix,
         env=None,
         log_file=None,
+        max_retry_seconds=None,
     ):
         _ = env, log_file
         captured["config_file"] = config_file
         captured["timeout_seconds"] = timeout_seconds
+        captured["max_retry_seconds"] = max_retry_seconds
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
         return module.GarakScanResult(
             returncode=0,
@@ -268,6 +287,7 @@ def test_run_benchmark_job_uses_garak_config_file(monkeypatch, tmp_path):
     assert config_payload["reporting"]["report_prefix"].endswith("scan")
     assert config_payload["run"]["generations"] == 2
     assert captured["timeout_seconds"] == 42
+    assert captured["max_retry_seconds"] == module.DEFAULT_MAX_RETRY_SECONDS
 
 
 def test_simple_mode_passes_hf_cache_env(monkeypatch, tmp_path):
@@ -278,7 +298,9 @@ def test_simple_mode_passes_hf_cache_env(monkeypatch, tmp_path):
 
     captured: dict[str, object] = {}
 
-    def _fake_run_garak_scan(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+    def _fake_run_garak_scan(
+        config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None
+    ):
         captured["env"] = env
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
         return module.GarakScanResult(returncode=0, stdout="", stderr="", report_prefix=report_prefix)
@@ -319,7 +341,9 @@ def test_simple_mode_no_hf_cache_passes_none_env(monkeypatch, tmp_path):
 
     captured: dict[str, object] = {}
 
-    def _fake_run_garak_scan(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+    def _fake_run_garak_scan(
+        config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None
+    ):
         captured["env"] = env
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
         return module.GarakScanResult(returncode=0, stdout="", stderr="", report_prefix=report_prefix)
@@ -632,7 +656,9 @@ class TestKFPModeExecution:
         report_prefix.parent.mkdir(parents=True)
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run_garak_scan(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run_garak_scan(
+            config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None
+        ):
             report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
             return module.GarakScanResult(
                 returncode=0,
@@ -689,7 +715,9 @@ class TestKFPModeExecution:
         report_prefix.parent.mkdir(parents=True)
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run_garak_scan(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run_garak_scan(
+            config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None
+        ):
             report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
             return module.GarakScanResult(returncode=0, stdout="", stderr="", report_prefix=report_prefix)
 
@@ -1584,7 +1612,7 @@ class TestJobPhaseReporting:
         report_prefix = tmp_path / "scan"
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None):
             return module.GarakScanResult(
                 returncode=0,
                 stdout="",
@@ -1761,7 +1789,7 @@ class TestJobPhaseReporting:
 
         scan_directories = []
 
-        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None):
             scan_directories.append(report_prefix.parent)
             report_prefix.with_suffix(".report.jsonl").write_text(
                 json.dumps(
@@ -1846,7 +1874,7 @@ class TestJobPhaseReporting:
         report_prefix.parent.mkdir(parents=True, exist_ok=True)
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None):
             return module.GarakScanResult(
                 returncode=0,
                 stdout="",
@@ -1902,7 +1930,7 @@ class TestJobPhaseReporting:
         report_prefix.parent.mkdir(parents=True, exist_ok=True)
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None):
+        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None):
             return module.GarakScanResult(
                 returncode=1,
                 stdout="",
@@ -1941,6 +1969,45 @@ class TestJobPhaseReporting:
         assert failed[0].error_message.message_code == "scan_failed"
         # Second FAILED: job_failed (from the outer exception handler)
         assert failed[1].error_message.message_code == "job_failed"
+
+    def test_retry_budget_stop_is_reported_as_the_failure(self, monkeypatch, tmp_path):
+        """A scan stopped by the retry budget fails the job with the budget's reason."""
+        module = _load_evalhub_garak_adapter(monkeypatch)
+        adapter = module.GarakAdapter()
+        monkeypatch.setenv("GARAK_SCAN_DIR", str(tmp_path))
+        captured = {}
+
+        def _fake_run(config_file, timeout_seconds, report_prefix, env=None, log_file=None, max_retry_seconds=None):
+            captured["max_retry_seconds"] = max_retry_seconds
+            return module.GarakScanResult(
+                returncode=-15,
+                stdout="",
+                stderr="",
+                report_prefix=report_prefix,
+                retry_budget_reason="the model kept failing for 10 min with no scan progress",
+            )
+
+        monkeypatch.setattr(module, "run_garak_scan", _fake_run)
+        statuses = []
+
+        class _Callbacks:
+            def report_status(self, update):
+                statuses.append(update)
+
+        job = SimpleNamespace(
+            id="retry-job",
+            benchmark_id="trustyai_garak::quick",
+            benchmark_index=0,
+            model=SimpleNamespace(url="http://localhost:8000", name="test-model"),
+            parameters={"max_retry_seconds": 600},
+            exports=None,
+        )
+
+        with pytest.raises(RuntimeError, match="Garak scan stopped: the model kept failing for 10 min"):
+            adapter.run_benchmark_job(job, _Callbacks())
+        assert captured["max_retry_seconds"] == 600
+        failed = [s for s in statuses if s.status == module.JobStatus.FAILED]
+        assert failed[0].error_message.message_code == "scan_failed"
 
 
 class TestResolveExecutionModeNonString:
@@ -3172,7 +3239,9 @@ class TestSimpleIntentsMode:
         report_prefix.parent.mkdir(parents=True, exist_ok=True)
         report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
 
-        def _fake_run_simple_intents(self, config, callbacks, garak_config_dict, scan_dir, timeout, intents_params):
+        def _fake_run_simple_intents(
+            self, config, callbacks, garak_config_dict, scan_dir, timeout, intents_params, max_retry_seconds=None
+        ):
             captured["called"] = True
             captured["intents_params"] = intents_params
             return module.GarakScanResult(
@@ -3223,7 +3292,7 @@ class TestSimpleIntentsMode:
             sdg_captured.update(kwargs)
             return fake_raw_df
 
-        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=None):
             sdg_captured["prompts_csv_path"] = str(prompts_csv_path)
             sdg_captured["config_json"] = config_json
             report_prefix = scan_dir / "scan"
@@ -3296,7 +3365,7 @@ class TestSimpleIntentsMode:
                 }
             )
 
-        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=None):
             report_prefix = scan_dir / "scan"
             report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
             return module.GarakScanResult(
@@ -3344,7 +3413,7 @@ class TestSimpleIntentsMode:
 
         setup_captured = {}
 
-        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=None):
             import pandas as pd
 
             setup_captured["prompts"] = pd.read_csv(prompts_csv_path)
@@ -3447,7 +3516,7 @@ class TestSimpleIntentsMode:
         scan_dir = tmp_path / "simple-intents-job"
         scan_dir.mkdir(parents=True, exist_ok=True)
 
-        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=None):
             report_prefix = scan_dir / "scan"
             report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
             return module.GarakScanResult(
@@ -3510,7 +3579,7 @@ class TestSimpleIntentsMode:
             sdg_captured["api_key"] = kwargs.get("api_key")
             return fake_raw_df
 
-        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds):
+        def _fake_setup_and_run(config_json, prompts_csv_path, scan_dir, timeout_seconds, max_retry_seconds=None):
             report_prefix = scan_dir / "scan"
             report_prefix.with_suffix(".report.jsonl").write_text("{}", encoding="utf-8")
             return module.GarakScanResult(returncode=0, stdout="", stderr="", report_prefix=report_prefix)
@@ -5082,7 +5151,7 @@ def test_intents_save_samples_by_default(monkeypatch, tmp_path):
     job.parameters.pop("save_sample_results")
     directories = []
 
-    def run_intents(config, callbacks, garak_config_dict, scan_dir, timeout, intents_params):
+    def run_intents(config, callbacks, garak_config_dict, scan_dir, timeout, intents_params, max_retry_seconds=None):
         directories.append(scan_dir)
         report_prefix = scan_dir / "scan"
         report_prefix.with_suffix(".report.jsonl").write_text(
@@ -5119,7 +5188,7 @@ def test_sample_export_failures_and_scratch_lifecycle(monkeypatch, tmp_path, cap
     adapter = module.GarakAdapter()
     directories, statuses, persisted = [], [], []
 
-    def run_scan(config, callbacks, garak_config_dict, scan_dir, timeout):
+    def run_scan(config, callbacks, garak_config_dict, scan_dir, timeout, max_retry_seconds=None):
         directories.append(scan_dir)
         report = {
             "entry_type": "attempt",

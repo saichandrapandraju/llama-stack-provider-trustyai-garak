@@ -104,6 +104,7 @@ Key `parameters` in the job spec:
 | `save_sample_results` | Persist per-sample JSONL; set explicitly to `false` to disable | `true` |
 | `execution_mode` | `simple` or `kfp` | `simple` |
 | `timeout_seconds` | Scan timeout | Profile default |
+| `max_retry_seconds` | Stop the scan when garak has retried failed model requests (HTTP 5xx, 429, timeouts) for this long with no progress; `0` disables it | `1800` |
 | `soft_probe_prompt_cap` | Preferred prompt limit per probe; some probes may exceed it | `256` |
 | `num_examples` | Compatibility alias for the soft per-probe prompt cap; explicit caps take precedence | — |
 | `eval_threshold` | Vulnerability threshold (0.0–1.0) | `0.5` |

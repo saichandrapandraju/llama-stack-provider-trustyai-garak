@@ -8,6 +8,9 @@ KUBEFLOW_CANDIDATE_NAMESPACES = ["redhat-ods-applications", "opendatahub"]
 
 # Default values
 DEFAULT_TIMEOUT = 0
+# Stop a scan when garak has retried failed model requests (5xx, 429, timeouts) for this long
+# with no progress. Unlike DEFAULT_TIMEOUT it doesn't depend on scan size or model latency.
+DEFAULT_MAX_RETRY_SECONDS = 1800
 DEFAULT_MODEL_TYPE = "openai.OpenAICompatible"
 DEFAULT_EVAL_THRESHOLD = 0.5
 

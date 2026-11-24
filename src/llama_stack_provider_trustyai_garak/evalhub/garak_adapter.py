@@ -50,6 +50,7 @@ from ..core.command_builder import build_generator_options
 from ..core.config_resolution import (
     build_effective_garak_config,
     resolve_scan_profile,
+    resolve_max_retry_seconds,
     resolve_timeout_seconds,
 )
 from ..core.garak_runner import convert_to_avid_report, GarakScanResult, run_garak_scan
@@ -66,6 +67,7 @@ from ..result_utils import (
 from ..utils import get_scan_base_dir, as_bool, safe_int
 from ..constants import (
     DEFAULT_TIMEOUT,
+    DEFAULT_MAX_RETRY_SECONDS,
     DEFAULT_MODEL_TYPE,
     DEFAULT_EVAL_THRESHOLD,
     EXECUTION_MODE_SIMPLE,
@@ -146,6 +148,8 @@ class GarakAdapter(FrameworkAdapter):
                 default_timeout=DEFAULT_TIMEOUT,
             )
             logger.info("Using timeout=%ss for benchmark=%s", timeout, config.benchmark_id)
+            max_retry_seconds = resolve_max_retry_seconds(benchmark_config, DEFAULT_MAX_RETRY_SECONDS)
+            logger.info("Using max_retry_seconds=%s (0 = no retry budget)", max_retry_seconds)
 
             eval_threshold = float(garak_config_dict.get("run", {}).get("eval_threshold", DEFAULT_EVAL_THRESHOLD))
 
@@ -159,6 +163,7 @@ class GarakAdapter(FrameworkAdapter):
                     intents_params=intents_params,
                     eval_threshold=eval_threshold,
                     scan_dir=scan_dir,
+                    max_retry_seconds=max_retry_seconds,
                 )
             elif art_intents:
                 result = self._run_simple_intents(
@@ -168,6 +173,7 @@ class GarakAdapter(FrameworkAdapter):
                     scan_dir=scan_dir,
                     timeout=timeout,
                     intents_params=intents_params,
+                    max_retry_seconds=max_retry_seconds,
                 )
             else:
                 result = self._run_simple(
@@ -176,12 +182,15 @@ class GarakAdapter(FrameworkAdapter):
                     garak_config_dict=garak_config_dict,
                     scan_dir=scan_dir,
                     timeout=timeout,
+                    max_retry_seconds=max_retry_seconds,
                 )
 
             if not result.success:
                 error_msg = f"Garak scan failed: {result.stderr}" if result.stderr else "Unknown error"
                 if result.timed_out:
                     error_msg = f"Scan timed out after {timeout} seconds"
+                elif result.retry_budget_reason:
+                    error_msg = f"Garak scan stopped: {result.retry_budget_reason}"
                 if result.log_errors:
                     error_msg += "\nscan.log errors:\n" + "\n".join(result.log_errors)
 
@@ -461,6 +470,7 @@ class GarakAdapter(FrameworkAdapter):
         garak_config_dict: dict,
         scan_dir: Path,
         timeout: int,
+        max_retry_seconds: int = DEFAULT_MAX_RETRY_SECONDS,
     ) -> GarakScanResult:
         """Run garak as a local subprocess."""
         log_file = scan_dir / "scan.log"
@@ -487,6 +497,7 @@ class GarakAdapter(FrameworkAdapter):
             log_file=log_file,
             report_prefix=report_prefix,
             env=env if env else None,
+            max_retry_seconds=max_retry_seconds,
         )
 
         # AVID conversion
@@ -508,6 +519,7 @@ class GarakAdapter(FrameworkAdapter):
         scan_dir: Path,
         timeout: int,
         intents_params: dict[str, Any],
+        max_retry_seconds: int = DEFAULT_MAX_RETRY_SECONDS,
     ) -> GarakScanResult:
         """Run an intents benchmark as a local subprocess with in-process SDG.
 
@@ -625,6 +637,7 @@ class GarakAdapter(FrameworkAdapter):
             prompts_csv_path=prompts_csv_path,
             scan_dir=scan_dir,
             timeout_seconds=timeout,
+            max_retry_seconds=max_retry_seconds,
         )
 
         return result
@@ -642,6 +655,7 @@ class GarakAdapter(FrameworkAdapter):
         intents_params: dict[str, Any] | None = None,
         eval_threshold: float = DEFAULT_EVAL_THRESHOLD,
         scan_dir: Path | None = None,
+        max_retry_seconds: int = DEFAULT_MAX_RETRY_SECONDS,
     ) -> tuple[GarakScanResult, Path]:
         """Submit a KFP pipeline, poll until done, download results from S3.
 
@@ -723,6 +737,7 @@ class GarakAdapter(FrameworkAdapter):
             "config_json": config_json,
             "s3_prefix": s3_prefix,
             "timeout_seconds": timeout,
+            "max_retry_seconds": max_retry_seconds,
             "s3_secret_name": kfp_config.s3_secret_name,
             "eval_threshold": eval_threshold,
             "art_intents": ip.get("art_intents", False),

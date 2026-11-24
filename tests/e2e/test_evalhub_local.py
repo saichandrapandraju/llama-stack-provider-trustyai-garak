@@ -41,6 +41,7 @@ from .mock_openai_server import (
     REFUSER,
     SDG,
     TRANSLATOR,
+    UNAVAILABLE,
     MockOpenAIServer,
 )
 
@@ -344,6 +345,24 @@ def test_rejected_credential_fails_the_job(evalhub: EvalHub, model_ref, tmp_path
         f"rejected credential reported {job['status']} / {job.get('results')}\n"
         f"{evalhub.adapter_log_tail(job['resource']['id'])}"
     )
+
+
+def test_unavailable_model_is_stopped_by_the_retry_budget(evalhub: EvalHub, mock_model, model_ref) -> None:
+    """HTTP 503 on every request: garak retries with no limit, so without the retry budget the
+    scan would run until the job is killed. The budget stops garak and fails the job."""
+    spec = _quick_job("e2e-unavailable", model_ref(UNAVAILABLE))
+    spec["benchmarks"][0]["parameters"] = {"max_retry_seconds": 20}
+
+    job = evalhub.wait(evalhub.submit(spec), QUICK_TIMEOUT)
+    job_id = job["resource"]["id"]
+
+    assert mock_model.state.snapshot()["requests_by_model"].get(UNAVAILABLE, 0) > 1, "garak never retried"
+    assert job["status"]["state"] == "failed", (
+        f"an unavailable model reported {job['status']} / {job.get('results')}\n{evalhub.adapter_log_tail(job_id)}"
+    )
+    log = _adapter_log(evalhub, job_id)
+    assert "the model kept failing for 20 s with no scan progress" in log, evalhub.adapter_log_tail(job_id)
+    assert "HTTP 503" in log
 
 
 # --------------------------------------------------------------------------- benchmark sweep
