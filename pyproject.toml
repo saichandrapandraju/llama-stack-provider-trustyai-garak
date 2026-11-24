@@ -43,7 +43,7 @@ sdg = [
 ]
 inline = [
     "llama-stack-provider-trustyai-garak[sdg]",
-    "garak==0.17.0+rhaiv.4",
+    "garak==0.17.1+rhaiv.1",
 ]
 # eval-hub-server: the server binary the e2e tests run (tests/e2e); its version selects
 # the eval-hub garak catalog the tests load. Install via scripts/install-locked-deps.sh --extras test.
