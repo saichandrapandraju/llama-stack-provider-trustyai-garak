@@ -1,0 +1,58 @@
+name: CodeQL
+
+# Static analysis of the Python code and the GitHub Actions workflows, so findings show up on
+# the pull request that introduces them rather than later, when downstream's CodeQL default
+# setup scans a sync pull request.
+#
+# Upstream only: downstream (red-hat-data-services) uses GitHub's CodeQL default setup, which
+# rejects results from an advanced workflow like this one, and midstream gets this file by
+# sync. The job is skipped there.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    if: github.repository == 'trustyai-explainability/llama-stack-provider-trustyai-garak'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, python]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          languages: ${{ matrix.language }}
+          # Neither language needs a build.
+          build-mode: none
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        with:
+          category: /language:${{ matrix.language }}

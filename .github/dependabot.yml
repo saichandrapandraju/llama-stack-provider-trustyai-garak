@@ -1,8 +1,32 @@
+# Dependabot runs in this (upstream) repository only. Midstream (opendatahub-io) deleted this
+# file, and downstream never had it, so the version bumps it proposes here reach them through
+# the syncs instead of being proposed three times. Because midstream deleted it, a change to
+# this file conflicts once in the next upstream -> midstream sync: resolve it by keeping the
+# file deleted there (`git rm .github/dependabot.yml`).
+#
+# Python dependencies are not updated here: requirements.txt is locked against the AIPCC index
+# (see CONTRIBUTING.md), and Dependabot resolves against public PyPI.
 version: 2
 updates:
-  - package-ecosystem: "pip"
+  # Actions in .github/workflows and .github/actions. Pinned actions are bumped commit and
+  # version comment together; all bumps of a week come as one pull request.
+  - package-ecosystem: github-actions
+    directories:
+      - "/"
+      - "/.github/actions/*"
+    schedule:
+      interval: weekly
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Hooks in .pre-commit-config.yaml (ruff).
+  - package-ecosystem: pre-commit
     directory: "/"
     schedule:
-      interval: "weekly"
-    exclude-paths:
-      - "requirements.txt"
+      interval: weekly
+    groups:
+      pre-commit:
+        patterns:
+          - "*"
