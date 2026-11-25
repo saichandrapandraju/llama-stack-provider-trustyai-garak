@@ -15,6 +15,8 @@ env:
   K8S_TESTS_REF: v0.1.0
   OPERATOR_REF: main
   PROVIDER_IMG: localhost/garak-provider:k8s-probe
+  # true: build nothing and let the cluster pull the image the operator pins.
+  USE_OPERATOR_PIN: "true"
 
 jobs:
   probe:
@@ -93,12 +95,13 @@ jobs:
       - name: k8s-tests up (cluster, operator images, load, deploy)
         working-directory: k8s-tests
         env:
-          GARAK_IMG: ${{ env.PROVIDER_IMG }}
+          GARAK_IMG: ${{ env.USE_OPERATOR_PIN != 'true' && env.PROVIDER_IMG || '' }}
         run: |
           uv run k8s-tests up
           "$MARK" "k8s-tests up"
 
       - name: Build the provider image
+        if: env.USE_OPERATOR_PIN != 'true'
         working-directory: provider
         run: |
           docker build -f Containerfile -t "$PROVIDER_IMG" .
@@ -106,6 +109,7 @@ jobs:
           docker image ls --format '{{.Repository}}:{{.Tag}} {{.Size}}'
 
       - name: Load the provider image into kind
+        if: env.USE_OPERATOR_PIN != 'true'
         run: |
           docker save "$PROVIDER_IMG" -o "$RUNNER_TEMP/provider.tar"
           echo "archive: $(du -h "$RUNNER_TEMP/provider.tar" | cut -f1)" | tee -a "$RUNNER_TEMP/notes.md"
@@ -117,6 +121,7 @@ jobs:
           "$MARK" "after removing the archive"
 
       - name: Start a pod from the loaded image
+        if: env.USE_OPERATOR_PIN != 'true'
         run: |
           kubectl run garak-probe --image="$PROVIDER_IMG" --image-pull-policy=IfNotPresent --restart=Never \
             --command -- python -c "import garak, llama_stack_provider_trustyai_garak; print('garak', garak.__version__)"
@@ -127,7 +132,7 @@ jobs:
       - name: Run the garak entry of the adapters section
         working-directory: k8s-tests
         env:
-          GARAK_IMG: ${{ env.PROVIDER_IMG }}
+          GARAK_IMG: ${{ env.USE_OPERATOR_PIN != 'true' && env.PROVIDER_IMG || '' }}
         run: |
           mkdir -p reports
           uv run k8s-tests test --section adapters --pytest-args "-k garak -rA --junitxml=reports/junit.xml"

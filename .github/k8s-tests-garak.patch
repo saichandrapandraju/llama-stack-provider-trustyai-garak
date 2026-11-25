@@ -1,17 +1,42 @@
 diff --git a/README.md b/README.md
-index 85ac3b3..5411550 100644
+index 85ac3b3..c188951 100644
 --- a/README.md
 +++ b/README.md
 @@ -289,6 +289,7 @@ Every one is a flag and an environment variable; `k8s-tests --help` lists them a
  | `LMES_REPO` | `../lm-evaluation-harness` | Checkout `images-all` builds `community-lmes` from (`Dockerfile.lmes-job`) |
  | `ADAPTERS` | `all` | `all`, `lmes`, or a comma-separated list of eval-hub-contrib adapter directories |
  | `LMES_IMG` / `INSPECT_IMG` / `LIGHTEVAL_IMG` | *(empty)* | Adapter image overrides passed through the module operator (`RELATED_IMAGE_ODH_*`) |
-+| `GARAK_IMG` | *(empty)* | garak adapter image, passed through `RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE` (`garak-provider-image` on a pre-module operator). The operator's pin needs credentials to pull, so the adapters section skips garak until this names an image the cluster can get, for example one loaded with `kind load image-archive` |
++| `GARAK_IMG` | *(empty)* | garak adapter image, passed through `RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE` (`garak-provider-image` on a pre-module operator). Set it to test a build of the adapter, for example one loaded with `kind load image-archive`. Operators before trustyai-explainability/trustyai-service-operator#1145 (3.5 included) pin an image that needs credentials to pull, so garak's adapters run needs this set against them |
  | `PLATFORM` | engine host platform | Platform the images are built for (`linux/arm64` on Apple Silicon) |
  | `IMAGES_ENV_FILE` | `reports/images.env` | Where `images-all` writes the image references and `deploy` and the checks read them |
  | `REMOVE_AFTER_PUSH` | *(empty)* | `images-all` removes each local image after pushing it; frees the podman machine's disk (incompatible with `SKIP_BUILD`) |
+@@ -582,10 +583,11 @@ k8s-tests test --pytest-args "-m 'not benchmark'"
+ `tests/evalhub/test_evalhub_adapters.py` is the section that runs real benchmarks. Every
+ entry in its `BENCHMARKS` table is one adapter run: submitted through the API,
+ waited for until the adapter finishes in the cluster, and read back as a result.
+-It covers one today, `ethics_cm` (commonsense moral judgment) of the
+-`lm_evaluation_harness` provider with `num_examples: 1`; adding a benchmark is one
+-more entry in that table, and every check then runs once for it, under a
+-`[<benchmark>]` id. Its jobs call the same endpoint the benchmark job does: the
++It covers two today: `ethics_cm` (commonsense moral judgment) of the
++`lm_evaluation_harness` provider, and `quick` (one DAN probe) of the `garak` provider,
++each with `num_examples: 1`. Adding a benchmark is one more entry in that table, and
++every check then runs once for it, under a `[<provider>-<benchmark>]` id, so
++`--pytest-args "-k garak"` runs one provider's entries alone. Its jobs call the same endpoint the benchmark job does: the
+ emulator the fixtures deploy, or `MODEL_URL` when that is set, with `MODEL_KEY` as
+ the credential.
+ 
+@@ -593,7 +595,7 @@ For each benchmark the section asserts that the job is accepted with exactly tha
+ benchmark, its provider and its `num_examples`; that the job and the benchmark
+ alone reach `completed`; that `results.benchmarks[]` carries the benchmark, its
+ provider and numeric metrics; that the metric the provider config scores it on
+-(`acc` for `ethics_cm`) is among those metrics and is a rate; that the provider's
++(`acc` for `ethics_cm`, `attack_success_rate` for `quick`) is among those metrics and is a rate; that the provider's
+ pass criteria turn the score into a `test` block; and, when the model is the
+ emulator, that it authenticated the job's model requests, so the model was called
+ rather than the job merely reporting success.
 diff --git a/harness/config.py b/harness/config.py
-index ec91fa7..875cafc 100644
+index ec91fa7..54e1c41 100644
 --- a/harness/config.py
 +++ b/harness/config.py
 @@ -216,6 +216,12 @@ SETTINGS: tuple[Setting, ...] = (
@@ -22,7 +47,7 @@ index ec91fa7..875cafc 100644
 +        field="garak_img",
 +        envvar="GARAK_IMG",
 +        default="",
-+        help="garak adapter image; empty keeps the operator's pin, and the adapters section skips garak",
++        help="garak adapter image; empty keeps the operator's pin",
 +    ),
      Setting(
          field="atif_img",
@@ -57,7 +82,7 @@ index 2d77db5..0d2610f 100644
  
  
 diff --git a/tests/evalhub/test_evalhub_adapters.py b/tests/evalhub/test_evalhub_adapters.py
-index 1de7366..d45760f 100644
+index 1de7366..1083035 100644
 --- a/tests/evalhub/test_evalhub_adapters.py
 +++ b/tests/evalhub/test_evalhub_adapters.py
 @@ -1,7 +1,7 @@
@@ -70,15 +95,7 @@ index 1de7366..d45760f 100644
  when `MODEL_URL` is set, a real endpoint, waits for the adapter to finish in the
  cluster, and reads the result back. `BENCHMARKS` is what the section covers; a new
  benchmark is one entry there, and every check below then runs once for it.
-@@ -17,6 +17,7 @@ the Hub - so it is never part of a default run: `k8s-tests test` excludes the
- from __future__ import annotations
- 
- import logging
-+import os
- from dataclasses import dataclass
- from typing import Any
- 
-@@ -34,6 +35,7 @@ LOGGER = logging.getLogger(__name__)
+@@ -34,6 +34,7 @@ LOGGER = logging.getLogger(__name__)
  pytestmark = [pytest.mark.evalhub, pytest.mark.adapters]
  
  LM_EVAL_PROVIDER = "lm_evaluation_harness"
@@ -86,25 +103,16 @@ index 1de7366..d45760f 100644
  # One example: enough for the harness to score, small enough for a Kind cluster.
  DEFAULT_NUM_EXAMPLES = 1
  # Longer than the harness smoke job's budget: a cold run pulls the adapter image
-@@ -51,17 +53,27 @@ class Benchmark:
-     # results the job reports.
-     primary_metric: str | None = None
-     num_examples: int = DEFAULT_NUM_EXAMPLES
-+    # The image setting the benchmark needs, for a provider whose operator pin cannot be
-+    # pulled anonymously; None runs it against whatever the operator pins.
-+    requires_image: str | None = None
- 
+@@ -55,13 +56,18 @@ class Benchmark:
  
  # ethics_cm is the commonsense split of hendrycks/ethics in lm-evaluation-harness,
  # which the provider config scores on `acc`.
 -BENCHMARKS: tuple[Benchmark, ...] = (Benchmark(id="ethics_cm", primary_metric="acc"),)
-+# garak's `quick` is one DAN probe scored by string-matching detectors, so nothing is
-+# downloaded. The operator pins quay.io/trustyai/llama-stack-provider-trustyai-garak:latest,
-+# which needs credentials to pull, so it runs only when GARAK_IMG names an image the
-+# cluster can get.
++# garak's `quick` is one DAN probe scored by string-matching detectors, so the job
++# downloads nothing. It runs the image the operator pins unless GARAK_IMG names another.
 +BENCHMARKS: tuple[Benchmark, ...] = (
 +    Benchmark(id="ethics_cm", primary_metric="acc"),
-+    Benchmark(id="quick", provider_id=GARAK_PROVIDER, primary_metric="attack_success_rate", requires_image="GARAK_IMG"),
++    Benchmark(id="quick", provider_id=GARAK_PROVIDER, primary_metric="attack_success_rate"),
 +)
  
  
@@ -116,7 +124,7 @@ index 1de7366..d45760f 100644
          "model": {
              "url": model.url,
              "name": model.name,
-@@ -79,10 +91,15 @@ def job_payload(benchmark: Benchmark, model: ModelEndpoint, credentials_secret:
+@@ -79,7 +85,9 @@ def job_payload(benchmark: Benchmark, model: ModelEndpoint, credentials_secret:
      return payload
  
  
@@ -126,14 +134,7 @@ index 1de7366..d45760f 100644
 +)
  def benchmark(request: pytest.FixtureRequest) -> Benchmark:
      """The benchmark under test; every check runs once per entry in BENCHMARKS."""
--    return request.param
-+    benchmark: Benchmark = request.param
-+    if benchmark.requires_image and not os.environ.get(benchmark.requires_image, "").strip():
-+        pytest.skip(f"{benchmark.provider_id}/{benchmark.id} needs {benchmark.requires_image} set to a pullable image")
-+    return benchmark
- 
- 
- @pytest.fixture(scope="module")
+     return request.param
 diff --git a/tests/harness/test_deploy.py b/tests/harness/test_deploy.py
 index 6b8b2e1..9780984 100644
 --- a/tests/harness/test_deploy.py
