@@ -1,10 +1,10 @@
 name: Wheels per architecture
 
-# The downstream image is built for x86_64, ppc64le and s390x from the AIPCC index that
-# requirements.txt names, but its pull-request builds cover x86_64 only. This checks that
-# the index has a wheel of every locked version each architecture installs, so a missing
-# ppc64le or s390x wheel shows up on the PR that changes the lock instead of in the release
-# build. It also runs weekly, since the index's content can change under an unchanged lock.
+# Downstream release builds cover x86_64, aarch64, ppc64le and s390x from the AIPCC index
+# that requirements.txt names, but pull-request builds on main cover x86_64 and aarch64
+# only. This checks that the index has a wheel of every locked version each architecture
+# installs, so a missing ppc64le or s390x wheel shows up on the PR that changes the lock
+# instead of in the release build. It also runs weekly, since the index's content can change under an unchanged lock.
 # See scripts/check_arch_wheels.py.
 
 on:
@@ -36,7 +36,7 @@ concurrency:
 
 jobs:
   wheels:
-    name: AIPCC wheels for x86_64, ppc64le, s390x
+    name: AIPCC wheels for x86_64, aarch64, ppc64le, s390x
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

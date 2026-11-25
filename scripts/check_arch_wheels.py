@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check that the lock's index has a wheel of every pin each target architecture installs.
 
-The downstream image is built for several architectures from the AIPCC index that
-requirements.txt names, but pull-request builds cover x86_64 only, so a wheel missing for
-ppc64le or s390x is otherwise found when the release build fails.
+The downstream release builds cover x86_64, aarch64, ppc64le and s390x from the AIPCC index
+that requirements.txt names, but pull-request builds on main cover x86_64 and aarch64 only,
+so a wheel missing for ppc64le or s390x is otherwise found when the release build fails.
 
 The lock is resolved for x86_64 and carries no environment markers, so it lists packages
 other architectures never install (triton is not a torch dependency on s390x, for example).
@@ -41,8 +41,8 @@ from packaging.tags import Tag, compatible_tags, cpython_tags
 from packaging.utils import InvalidWheelFilename, canonicalize_name, parse_wheel_filename
 from packaging.version import InvalidVersion, Version
 
-# What the downstream Konflux pipelines build (build-platforms in .tekton/).
-DEFAULT_ARCHES = ("x86_64", "ppc64le", "s390x")
+# What the downstream Konflux release pipelines build (build-platforms; arm64 is aarch64).
+DEFAULT_ARCHES = ("x86_64", "aarch64", "ppc64le", "s390x")
 DEFAULT_PYTHON = "3.12"
 # glibc of the RHEL 9 base images: manylinux_2_34 is the newest tag they can install.
 GLIBC_MINOR = 34

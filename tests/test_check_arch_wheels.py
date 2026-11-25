@@ -148,11 +148,13 @@ def test_an_unreadable_index_is_not_reported_as_available():
 @pytest.mark.parametrize(
     ("files", "status"),
     [
-        ({"pkg": [f"pkg-1.0-cp312-cp312-linux_{a}.whl" for a in ARCHES]}, 0),
-        ({"pkg": ["pkg-1.0-cp312-cp312-linux_x86_64.whl"]}, 1),
+        ({"pkg": [f"pkg-1.0-cp312-cp312-linux_{a}.whl" for a in caw.DEFAULT_ARCHES]}, 0),
+        ({"pkg": ["pkg-1.0-cp312-cp312-linux_x86_64.whl", "pkg-1.0-cp312-cp312-linux_aarch64.whl"]}, 1),
     ],
 )
 def test_main_exit_status(tmp_path, monkeypatch, capsys, files, status):
+    """By default every architecture the release builds is checked, aarch64 included."""
+    assert caw.DEFAULT_ARCHES == ("x86_64", "aarch64", "ppc64le", "s390x")
     requirements = tmp_path / "requirements.txt"
     requirements.write_text(f"--index-url {INDEX}\npkg==1.0\n")
     monkeypatch.setattr(caw, "fetch_files", _fake_index(files))
@@ -175,8 +177,8 @@ def _lock(tmp_path):
 
 def test_main_takes_markers_from_the_resolution_and_lines_from_the_lock(tmp_path, monkeypatch, capsys):
     files = {
-        "pkg": [f"pkg-1.0-cp312-cp312-linux_{a}.whl" for a in ARCHES],
-        "triton": ["triton-3.6.0-cp312-cp312-linux_x86_64.whl"],
+        "pkg": [f"pkg-1.0-cp312-cp312-linux_{a}.whl" for a in caw.DEFAULT_ARCHES],
+        "triton": ["triton-3.6.0-cp312-cp312-linux_x86_64.whl", "triton-3.6.0-cp312-cp312-linux_aarch64.whl"],
     }
     resolved = f"--index-url {INDEX}\ntriton==3.6.0 ; platform_machine != 's390x'\npkg==1.0\n"
     monkeypatch.setattr(caw, "fetch_files", _fake_index(files))
