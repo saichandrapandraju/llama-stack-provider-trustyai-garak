@@ -31,7 +31,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-kind-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  # operator_ref keeps manual runs of different operator refs from cancelling each other.
+  group: e2e-kind-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}-${{ inputs.operator_ref }}
   cancel-in-progress: true
 
 env:
@@ -49,9 +50,9 @@ jobs:
     if: >-
       github.event_name != 'schedule' || github.repository_owner == 'trustyai-explainability'
     runs-on: ubuntu-latest
-    # The operator images are Go builds and the provider image carries torch; the checks
-    # themselves take about two minutes.
-    timeout-minutes: 60
+    # A run takes about ten minutes. The long steps have their own timeouts, so a hang fails
+    # that step and the diagnostics below still run; this is above their sum.
+    timeout-minutes: 90
     env:
       OPERATOR_REPO: ${{ github.workspace }}/trustyai-service-operator
     steps:
@@ -104,13 +105,16 @@ jobs:
 
       - name: Create the kind cluster and deploy the operators
         working-directory: k8s-tests
+        timeout-minutes: 20
         run: uv run k8s-tests up
 
       - name: Build the provider image
         working-directory: provider
+        timeout-minutes: 20
         run: docker build -f Containerfile -t "$GARAK_IMG" .
 
       - name: Load the provider image into the kind node
+        timeout-minutes: 10
         run: |
           docker save "$GARAK_IMG" -o "$RUNNER_TEMP/provider.tar"
           kind load image-archive --name "$KIND_CLUSTER" "$RUNNER_TEMP/provider.tar"
@@ -118,6 +122,8 @@ jobs:
 
       - name: Run the garak checks
         working-directory: k8s-tests
+        # k8s-tests waits up to 30 minutes for the job itself and fails when it doesn't finish.
+        timeout-minutes: 35
         run: |
           mkdir -p reports
           uv run k8s-tests test --section adapters --pytest-args "-k garak -rA --junitxml=reports/junit.xml"
