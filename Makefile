@@ -1,6 +1,6 @@
 RHAI_INDEX_URL := https://console.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9/simple/
 
-.PHONY: test coverage lint format typecheck check build lock install install-dev e2e e2e-sweep e2e-sweep-full
+.PHONY: test coverage lint format typecheck check build lock check-arch-wheels install install-dev e2e e2e-sweep e2e-sweep-full
 
 test:
 	pytest tests -v -m "not e2e"
@@ -45,6 +45,11 @@ lock:
 		--index-url $(RHAI_INDEX_URL) \
 		--constraint constraints.txt \
 		-o requirements.txt
+
+# Does the index have a wheel of every locked version each target architecture installs?
+check-arch-wheels:
+	uv run --no-project --with "$(shell grep -E '^packaging==' requirements.txt)" \
+		python scripts/check_arch_wheels.py requirements.txt
 
 install:
 	pip install -e .

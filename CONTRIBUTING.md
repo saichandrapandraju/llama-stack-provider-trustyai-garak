@@ -90,6 +90,13 @@ Run `make lock` and commit the result before pushing. Pull requests from branche
 in this repository retain automatic lockfile commits in a write-enabled job
 that only runs for same-repository pull requests.
 
+The downstream image is built for x86_64, ppc64le and s390x, but its pull-request
+builds cover x86_64 only. CI therefore also checks that the index has a wheel of
+every locked version each of those architectures installs (`make check-arch-wheels`,
+`scripts/check_arch_wheels.py`), on pull requests that change the lock and weekly.
+If it fails, that version is missing from the AIPCC index for that architecture:
+pick a version that has it, or ask the AIPCC team to build it.
+
 ## Project Structure
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for a detailed module-by-module breakdown.
