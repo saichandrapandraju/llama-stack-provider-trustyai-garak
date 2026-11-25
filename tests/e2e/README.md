@@ -107,6 +107,25 @@ label. They run on that event and on every later push while the label stays,
 which is useful for garak bumps, dependency changes and SDK upgrades. The
 "open an issue on failure" step runs only on the schedule.
 
+### Kubernetes tier (kind)
+
+The tests above run eval-hub in local mode, with no cluster. [`e2e-kind.yml`](../../.github/workflows/e2e-kind.yml)
+(*Tier 3 - Kubernetes (kind) E2E*) covers what only a cluster exercises: the TrustyAI operators
+render the garak provider config, eval-hub starts the job pod with its sidecar, and the tenant's
+model Secret reaches the model. It brings up the operators on kind with
+[k8s-tests](https://github.com/trustyai-explainability/k8s-tests), loads the provider image built
+from the commit into the node (`GARAK_IMG`), and runs the garak entry of k8s-tests' adapters
+section (`quick` against its LLM emulator).
+
+| When | Operator | Takes |
+| --- | --- | --- |
+| Every PR | Pinned commit (`OPERATOR_PINNED_REF`), so a failure points at the PR | ~10 min |
+| Nightly | `main`, to catch operator or eval-hub changes that break garak; a failure opens or comments on an `e2e-kind-nightly` issue | ~10 min |
+
+k8s-tests is pinned too (`K8S_TESTS_REF`). To try another operator ref, run the workflow from the
+Actions tab with `operator_ref`. Locally, follow k8s-tests' README and set `GARAK_IMG` to an image
+loaded with `kind load image-archive`. KFP mode needs Data Science Pipelines and isn't covered.
+
 ## Testing an existing image
 
 The suite can run inside any build of the provider, not just one built from the

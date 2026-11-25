@@ -1,0 +1,193 @@
+name: Tier 3 - Kubernetes (kind) E2E
+
+# Runs the adapter the way the product does, on a kind cluster: the TrustyAI operators from
+# trustyai-explainability/trustyai-service-operator, the EvalHub instance they manage, and an
+# eval-hub job pod running the provider image built from this commit, with its sidecar and the
+# tenant's model Secret, against the LLM emulator. The checks are the garak entry of the
+# adapters section of trustyai-explainability/k8s-tests (garak `quick`): the job completes,
+# reports attack_success_rate and a pass/fail outcome, and the emulator saw the tenant's token.
+#
+#   pull_request : operator pinned at OPERATOR_PINNED_REF, so a failure points at the PR
+#   schedule     : operator main, to catch operator changes that break garak (upstream only);
+#                  a failure opens or comments on an "e2e-kind-nightly" issue
+#
+# The provider image is loaded into the kind node and handed to the operator through
+# GARAK_IMG (RELATED_IMAGE_ODH_TRUSTYAI_GARAK_LLS_PROVIDER_DSP_IMAGE); job pods pull it
+# IfNotPresent, so nothing is pushed to a registry. KFP mode needs Data Science Pipelines and is
+# not covered here.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+    inputs:
+      operator_ref:
+        description: trustyai-service-operator branch, tag or commit (empty uses the pinned commit)
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-kind-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+env:
+  # k8s-tests main at trustyai-explainability/k8s-tests#21, the first commit with the garak entry
+  # and GARAK_IMG. Move to a release tag once one includes it.
+  K8S_TESTS_REF: 784de378deba964fbcd1296289f75c677da6a596
+  # Operator main at trustyai-explainability/trustyai-service-operator#1145 (public garak default).
+  OPERATOR_PINNED_REF: 1c5376ba9b8564e9bee3362a20c0634025a316c2
+  KIND_CLUSTER: trustyai
+  GARAK_IMG: localhost/garak-provider:kind-ci
+
+jobs:
+  kind:
+    name: garak on kind (operator ${{ github.event_name == 'schedule' && 'main' || 'pinned' }})
+    if: >-
+      github.event_name != 'schedule' || github.repository_owner == 'trustyai-explainability'
+    runs-on: ubuntu-latest
+    # The operator images are Go builds and the provider image carries torch; the checks
+    # themselves take about two minutes.
+    timeout-minutes: 60
+    env:
+      OPERATOR_REPO: ${{ github.workspace }}/trustyai-service-operator
+    steps:
+      - name: Check out the provider
+        uses: actions/checkout@v4
+        with:
+          path: provider
+          persist-credentials: false
+
+      - name: Check out k8s-tests
+        uses: actions/checkout@v4
+        with:
+          repository: trustyai-explainability/k8s-tests
+          ref: ${{ env.K8S_TESTS_REF }}
+          path: k8s-tests
+          persist-credentials: false
+
+      - name: Check out the operator
+        uses: actions/checkout@v4
+        with:
+          repository: trustyai-explainability/trustyai-service-operator
+          ref: ${{ github.event_name == 'schedule' && 'main' || inputs.operator_ref || env.OPERATOR_PINNED_REF }}
+          path: trustyai-service-operator
+          persist-credentials: false
+
+      - name: Install kind and kubectl
+        env:
+          KIND_VERSION: v0.33.0
+          # The checks mint bearer tokens with `kubectl create token`.
+          KUBECTL_VERSION: v1.37.2
+          # Digests of the two release assets, as the operator's k8s-tests workflow pins them.
+          KIND_SHA256: aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d
+          KUBECTL_SHA256: c04487523e7aa7d1493f7808174c899db93d7a9cf57531420cd76b9bd415f8f4
+        run: |
+          curl -fsSLo /tmp/kind "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64"
+          curl -fsSLo /tmp/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl"
+          echo "${KIND_SHA256}  /tmp/kind" | sha256sum --check --strict -
+          echo "${KUBECTL_SHA256}  /tmp/kubectl" | sha256sum --check --strict -
+          sudo install -m 0755 /tmp/kind /tmp/kubectl /usr/local/bin/
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          cache-dependency-glob: k8s-tests/uv.lock
+
+      - name: Install k8s-tests
+        working-directory: k8s-tests
+        run: uv sync --frozen
+
+      - name: Create the kind cluster and deploy the operators
+        working-directory: k8s-tests
+        run: uv run k8s-tests up
+
+      - name: Build the provider image
+        working-directory: provider
+        run: docker build -f Containerfile -t "$GARAK_IMG" .
+
+      - name: Load the provider image into the kind node
+        run: |
+          docker save "$GARAK_IMG" -o "$RUNNER_TEMP/provider.tar"
+          kind load image-archive --name "$KIND_CLUSTER" "$RUNNER_TEMP/provider.tar"
+          rm -f "$RUNNER_TEMP/provider.tar"
+
+      - name: Run the garak checks
+        working-directory: k8s-tests
+        run: |
+          mkdir -p reports
+          uv run k8s-tests test --section adapters --pytest-args "-k garak -rA --junitxml=reports/junit.xml"
+
+      - name: Collect what the cluster looked like
+        if: failure()
+        working-directory: k8s-tests
+        run: |
+          set +e
+          mkdir -p reports
+          {
+            echo "## pods"; kubectl get pods -A -o wide
+            echo; echo "## jobs"; kubectl get jobs -A
+            echo; echo "## recent events"; kubectl get events -A --sort-by=.lastTimestamp | tail -n 100
+            echo; echo "## garak provider config"
+            kubectl get configmaps -A -o json \
+              | jq -r '.items[] | select(.metadata.name | test("provider-garak")) | "\(.metadata.namespace)/\(.metadata.name)"'
+            for pod in $(kubectl get pods -A --no-headers | awk '$2 !~ /^(coredns|etcd|kube-|kindnet|local-path)/ {print $1 "/" $2}'); do
+              echo; echo "## logs ${pod}"; kubectl logs -n "${pod%%/*}" "${pod#*/}" --all-containers --tail=200
+            done
+          } > reports/diagnostics.txt 2>&1
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-kind-${{ github.event.pull_request.number || github.run_id }}
+          path: k8s-tests/reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Summary
+        if: always()
+        working-directory: k8s-tests
+        env:
+          OPERATOR_REF: ${{ github.event_name == 'schedule' && 'main' || inputs.operator_ref || env.OPERATOR_PINNED_REF }}
+        run: |
+          {
+            echo "### garak on kind"
+            echo
+            echo "k8s-tests \`${K8S_TESTS_REF:0:10}\`, trustyai-service-operator \`${OPERATOR_REF}\`, provider image built from \`${GITHUB_SHA:0:10}\`."
+            echo
+            if [ -f reports/junit.xml ]; then
+              uv run k8s-tests summary reports/junit.xml || echo "_The summary could not be rendered; see the report artifact._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  report-nightly:
+    name: Report nightly failure
+    needs: [kind]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update the e2e-kind-nightly issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          gh label create e2e-kind-nightly --color B60205 --description "Nightly kind e2e failure" 2>/dev/null || true
+          existing=$(gh issue list --label e2e-kind-nightly --state open --json number --jq '.[0].number')
+          body="Nightly garak-on-kind e2e failed against trustyai-service-operator main: ${RUN_URL}
+
+          The same checks pass on pull requests against the pinned operator commit, so a failure here
+          usually means an operator (or eval-hub) change on main breaks garak jobs. The run's artifact has
+          the k8s-tests report and the cluster's pods, events and logs."
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --label e2e-kind-nightly --title "Nightly garak-on-kind e2e failing" --body "$body"
+          fi
