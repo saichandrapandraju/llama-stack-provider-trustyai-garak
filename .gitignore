@@ -16,6 +16,7 @@ scan_out/
 *.csv
 *.ipynb
 *.json
+!.github/renovate.json
 *.cpu
 # Hermeto outputs (generated during testing)
 hermeto-output*/

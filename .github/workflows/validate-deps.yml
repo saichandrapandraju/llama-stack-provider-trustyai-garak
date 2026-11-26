@@ -1,10 +1,23 @@
 name: Validate Dependencies
 
+# One file for upstream (trustyai-explainability), midstream (opendatahub-io) and downstream
+# (red-hat-data-services): the syncs carry it unchanged, and each job says where it runs.
+#
+#   lock-check        everywhere, except same-repository PRs upstream (auto-sync covers those)
+#   sync-requirements upstream same-repository PRs: commits the regenerated lock to the PR
+#   container-build   upstream and midstream; downstream builds its image in Konflux, on the
+#                     AIPCC base image, from the same lock
+#   check-garak-drift upstream schedule, or a manual run anywhere; report-drift keeps the
+#                     garak-drift issue current on scheduled runs
+#
+# The lock is resolved against the AIPCC index but never installed here: AIPCC packages are
+# meant for AIPCC base images, which is what the downstream Konflux build installs them on.
+
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'rhoai-*']
   push:
-    branches: [main]
+    branches: [main, 'rhoai-*']
   schedule:
     # Garak drift is about new fork tags, not PR content, so it runs on a schedule
     # instead of failing every open PR the moment a tag is pushed.
@@ -14,20 +27,28 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
 jobs:
-  validate-fork-requirements:
-    name: Validate requirements.txt (fork PRs)
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository
+  lock-check:
+    name: Validate requirements.txt
+    if: >-
+      github.event_name != 'schedule' &&
+      !(github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.repository_owner == 'trustyai-explainability')
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout PR branch
+      - name: Check out the commit under test
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.event.pull_request.head.repo.full_name }}
-          ref: ${{ github.event.pull_request.head.sha }}
+          # A PR is checked at its head, so a failure reproduces on the contributor's branch.
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Python
@@ -36,18 +57,27 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
+        # `make lock` runs the uv version the Makefile pins (UV_VERSION) through uvx.
         run: python -m pip install --upgrade pip uv
 
       - name: Regenerate requirements.txt
         run: make lock
 
-      - name: Validate requirements.txt
-        run: git diff --exit-code -- requirements.txt
+      - name: Compare with the committed requirements.txt
+        run: |
+          if ! git diff --exit-code -- requirements.txt; then
+            echo "::error file=requirements.txt::requirements.txt does not match pyproject.toml and constraints.txt. Run 'make lock' and commit the result."
+            exit 1
+          fi
 
   sync-requirements:
     name: Auto-sync requirements.txt
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.repository_owner == 'trustyai-explainability'
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
 
@@ -87,6 +117,7 @@ jobs:
       (github.event_name == 'schedule' && github.repository_owner == 'trustyai-explainability') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       pinned: ${{ steps.versions.outputs.pinned }}
       latest: ${{ steps.versions.outputs.latest }}
@@ -94,6 +125,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Read the pinned garak version and the latest midstream tag
         id: versions
@@ -139,6 +172,7 @@ jobs:
       always() && github.event_name == 'schedule' &&
       contains(fromJSON('["success", "failure"]'), needs.check-garak-drift.result)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       issues: write
@@ -150,6 +184,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: .github/actions
+          persist-credentials: false
 
       - name: Open, update or close the garak-drift issue
         uses: ./.github/actions/report-scheduled-run
@@ -179,12 +214,16 @@ jobs:
 
   container-build:
     name: Container Build + Import Validation
-    if: github.event_name != 'schedule'
+    # Downstream builds its image in Konflux on the AIPCC base image instead.
+    if: github.event_name != 'schedule' && github.repository_owner != 'red-hat-data-services'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Build container image
         run: |

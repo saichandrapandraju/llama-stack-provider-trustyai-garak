@@ -2,18 +2,26 @@ name: Publish to PyPi
 on:
   release:
     types: [published]
+
+permissions:
+  contents: read
+
 jobs:
   pypi-publish:
     name: upload release to PyPi
+    if: github.repository == 'trustyai-explainability/llama-stack-provider-trustyai-garak'
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/llama-stack-provider-trustyai-garak
     permissions:
+      contents: read
       id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@v6
         with:

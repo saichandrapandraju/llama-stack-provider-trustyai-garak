@@ -1,4 +1,7 @@
 RHAI_INDEX_URL := https://console.redhat.com/api/pypi/public-rhai/rhoai/3.6/cpu-ubi9/simple/
+# The uv that writes requirements.txt, here, in the pre-commit hook and in CI. Pinned so every
+# repository and machine regenerates the same lock; uvx fetches it with any installed uv.
+UV_VERSION := 0.13.10
 
 .PHONY: test coverage lint format typecheck check build lock install install-dev e2e e2e-sweep e2e-sweep-full
 
@@ -35,7 +38,7 @@ build:
 	docker build -f Containerfile -t trustyai-garak:dev .
 
 lock:
-	uv pip compile \
+	uvx uv@$(UV_VERSION) pip compile \
 		--python-platform linux \
 		--extra inline \
 		--index-strategy first-index \

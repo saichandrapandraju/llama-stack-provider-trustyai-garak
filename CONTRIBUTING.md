@@ -84,11 +84,14 @@ When you change `pyproject.toml`, the pre-commit hook automatically regenerates
 make lock
 ```
 
-For pull requests from forks, CI regenerates `requirements.txt` and checks that
-the committed file matches in a separate job with read-only repository permissions.
-Run `make lock` and commit the result before pushing. Pull requests from branches
-in this repository retain automatic lockfile commits in a write-enabled job
-that only runs for same-repository pull requests.
+`make lock` runs the uv version pinned in the Makefile (`UV_VERSION`, through
+`uvx`), so every machine and repository writes the same lock.
+
+CI regenerates `requirements.txt` on every pull request and push, and fails
+if the committed file differs: run `make lock` and commit the result. The one
+exception is pull requests from branches of the upstream repository
+(trustyai-explainability), where CI commits the regenerated file to the branch
+instead. The same workflow runs in midstream and downstream.
 
 ## Project Structure
 

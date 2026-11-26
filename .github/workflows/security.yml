@@ -5,31 +5,34 @@ on:
     branches: [main]
   push:
     branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   trivy-scan:
     name: Trivy Security Scan
+    if: github.ref == 'refs/heads/main' || github.base_ref == 'main'
     runs-on: ubuntu-latest
-    container:
-      image: registry.access.redhat.com/ubi9/python-312:latest
-      options: --user root
+    timeout-minutes: 20
     permissions:
       contents: read
       security-events: write
       actions: read
 
     steps:
-
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Install runtime deps (requirements.txt, public indexes)
-        run: |
-          python -m pip install --upgrade pip
-          PIP_EXTRA_ARGS=--no-cache-dir scripts/install-locked-deps.sh
-          python -m pip install --no-cache-dir --no-deps .
+        with:
+          persist-credentials: false
 
       - name: Run Trivy filesystem scan
+        id: filesystem-scan
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           scan-type: 'fs'
@@ -37,18 +40,7 @@ jobs:
           format: 'sarif'
           output: 'trivy-fs-results.sarif'
           severity: 'CRITICAL,HIGH,MEDIUM,LOW'
-          exit-code: '0'  # Don't fail on this scan, we'll check results separately
-
-      - name: Run Trivy dependency scan
-        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
-        with:
-          scan-type: 'fs'
-          scan-ref: '.'
-          format: 'sarif'
-          output: 'trivy-deps-results.sarif'
-          severity: 'CRITICAL,HIGH,MEDIUM,LOW'
-          scanners: 'vuln'
-          exit-code: '0'  # Don't fail on this scan, we'll check results separately
+          exit-code: '0'  # Report findings without a failure.
 
       - name: Check for critical vulnerabilities
         uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
@@ -57,18 +49,15 @@ jobs:
           scan-ref: '.'
           format: 'table'
           severity: 'CRITICAL'
-          exit-code: '1'  # Fail if critical vulnerabilities found
+          # Secrets too: the pre-commit secret scan only runs where a contributor installed it.
+          scanners: 'vuln,secret'
+          exit-code: '1'  # Fail if critical vulnerabilities or secrets exist.
 
       - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
+        uses: github/codeql-action/upload-sarif@915412ff23e8b7659517e607487dbeae018f2934 # v4.39.5
+        if: >-
+          always() && steps.filesystem-scan.outcome == 'success' &&
+          (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         with:
           sarif_file: 'trivy-fs-results.sarif'
           category: 'trivy-filesystem'
-
-      - name: Upload Trivy dependency scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v3
-        if: always() && github.event_name == 'pull_request' && github.base_ref == 'main'
-        with:
-          sarif_file: 'trivy-deps-results.sarif'
-          category: 'trivy-dependencies'

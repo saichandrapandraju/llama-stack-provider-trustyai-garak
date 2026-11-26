@@ -27,7 +27,9 @@ homepage = "https://github.com/trustyai-explainability/llama-stack-provider-trus
 repository = "https://github.com/trustyai-explainability/llama-stack-provider-trustyai-garak"
 
 [build-system]
-requires = ["setuptools>=80.9.0"]
+requires = [
+    "setuptools>=80.9.0",
+]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
