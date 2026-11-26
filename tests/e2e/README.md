@@ -120,6 +120,7 @@ section (`quick` against its LLM emulator).
 | When | Operator | Takes |
 | --- | --- | --- |
 | Every PR | Pinned commit (`OPERATOR_PINNED_REF`), so a failure points at the PR | ~10 min |
+| PRs labelled `run-nightly-e2e` | Also `main`, as a second job: when the label is added and on every later push while it stays (the same label runs the Tier 2 nightly jobs) | ~10 min |
 | Nightly | `main`, to catch operator or eval-hub changes that break garak; a failure opens or comments on an `e2e-kind-nightly` issue, which closes after the next night that passes | ~10 min |
 
 k8s-tests is pinned too (`K8S_TESTS_REF`). To try another operator ref, run the workflow from the
