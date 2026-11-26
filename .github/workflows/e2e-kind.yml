@@ -173,27 +173,38 @@ jobs:
 
   report-nightly:
     name: Report nightly failure
+    # Scheduled runs only: opens (or comments on) the "e2e-kind-nightly" issue when the run fails,
+    # and closes it after the next night that passes.
     needs: [kind]
-    if: failure() && github.event_name == 'schedule'
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      contains(fromJSON('["success", "failure"]'), needs.kind.result)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: report-e2e-kind-nightly
+      cancel-in-progress: false
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update the e2e-kind-nightly issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          gh label create e2e-kind-nightly --color B60205 --description "Nightly kind e2e failure" 2>/dev/null || true
-          existing=$(gh issue list --label e2e-kind-nightly --state open --json number --jq '.[0].number')
-          body="Nightly garak-on-kind e2e failed against trustyai-service-operator main: ${RUN_URL}
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
 
-          The same checks pass on pull requests against the pinned operator commit, so a failure here
-          usually means an operator (or eval-hub) change on main breaks garak jobs. The run's artifact has
-          the k8s-tests report and the cluster's pods, events and logs."
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
-          else
-            gh issue create --label e2e-kind-nightly --title "Nightly garak-on-kind e2e failing" --body "$body"
-          fi
+      - name: Open, update or close the e2e-kind-nightly issue
+        uses: ./.github/actions/report-scheduled-run
+        with:
+          outcome: ${{ needs.kind.result }}
+          label: e2e-kind-nightly
+          label-description: Nightly garak-on-kind e2e failure
+          title: Nightly garak-on-kind e2e failing
+          # One comment per failing night: re-running the same run doesn't comment again.
+          key: run-${{ github.run_id }}
+          body: |
+            Nightly garak-on-kind e2e failed against trustyai-service-operator main.
+
+            The same checks pass on pull requests against the pinned operator commit, so a failure here
+            usually means an operator (or eval-hub) change on main breaks garak jobs. The run's artifact has
+            the k8s-tests report and the cluster's pods, events and logs.
