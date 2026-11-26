@@ -155,7 +155,7 @@ fsspec==2026.6.0
     #   torch
 ftfy==6.3.1
     # via garak
-garak==0.17.0+rhaiv.4
+garak==0.17.1+rhaiv.1
     # via llama-stack-provider-trustyai-garak (pyproject.toml)
 google-api-core==2.36.0
     # via
