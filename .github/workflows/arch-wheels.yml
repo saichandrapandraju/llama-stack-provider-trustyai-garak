@@ -37,6 +37,9 @@ concurrency:
 jobs:
   wheels:
     name: AIPCC wheels for x86_64, aarch64, ppc64le, s390x
+    # The weekly run is upstream only; midstream and downstream get this file by sync and check
+    # their pull requests and pushes.
+    if: github.event_name != 'schedule' || github.repository_owner == 'trustyai-explainability'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -53,3 +56,42 @@ jobs:
 
       - name: Check the index for every architecture
         run: python scripts/check_arch_wheels.py requirements.txt
+
+  report-weekly:
+    name: Report weekly failure
+    # Scheduled runs only: opens (or comments on) the "aipcc-wheels" issue when a wheel goes
+    # missing, and closes it after the next weekly run that passes.
+    needs: [wheels]
+    if: >-
+      always() && github.event_name == 'schedule' &&
+      contains(fromJSON('["success", "failure"]'), needs.wheels.result)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: report-aipcc-wheels
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: .github/actions
+          persist-credentials: false
+
+      - name: Open, update or close the aipcc-wheels issue
+        uses: ./.github/actions/report-scheduled-run
+        with:
+          outcome: ${{ needs.wheels.result }}
+          label: aipcc-wheels
+          label-description: The AIPCC index lacks a wheel the lock needs for a release architecture
+          title: AIPCC index is missing wheels for the lock
+          key: run-${{ github.run_id }}
+          body: |
+            The weekly check found a locked version that the AIPCC index has no installable wheel for,
+            on an architecture the downstream release builds (x86_64, aarch64, ppc64le, s390x). The run's
+            log and annotations name the package, version and architectures.
+
+            Pick a version the index has for every architecture (`make lock` after adjusting
+            `constraints.txt` or `pyproject.toml`), or ask the AIPCC team to build the missing wheel.
+            Run `make check-arch-wheels` to check locally.
